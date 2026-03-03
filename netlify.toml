@@ -1,45 +1,45 @@
 # ============================================================
 # Netlify Configuration for Food Poll Telegram Bot
 # ============================================================
-# NOTE: Netlify does not support long-running processes.
-# This bot must run in WEBHOOK mode (not polling mode).
-# The webhook handler lives in netlify/functions/webhook.py
-# Set your Telegram webhook URL to:
-#   https://<your-site>.netlify.app/.netlify/functions/webhook
+# Bot runs in WEBHOOK mode via a Python serverless function.
+# Webhook handler: netlify/functions/webhook.py
+#
+# After deploying, register the webhook with Telegram ONCE:
+#   https://api.telegram.org/bot<BOT_TOKEN>/setWebhook?url=https://<your-site>.netlify.app/webhook
 # ============================================================
 
 [build]
-  # No frontend build step needed for a pure bot
   publish = "public"
-  command  = "mkdir -p public && echo 'Bot deployed' > public/index.html"
+  # Creates the required publish directory and installs deps for the function
+  command  = "mkdir -p public && echo 'Food Bot — deployed via webhook' > public/index.html"
 
 # --------------- Python Functions Runtime -------------------
 [functions]
-  directory         = "netlify/functions"
-  node_bundler      = "esbuild"
+  directory = "netlify/functions"
 
-# Tell Netlify to use the Python 3.11 runtime for .py functions
+# Python 3.11 runtime + bundle the bot/ package alongside the function
 [functions."webhook"]
-  runtime = "python3.11"
+  runtime        = "python3.11"
+  # Include the entire bot package so imports work inside the function
+  included_files = ["bot/**"]
 
 # --------------- Environment Variables ----------------------
-# Do NOT commit real secrets here.
-# Set these in the Netlify dashboard → Site settings → Environment variables.
+# Set BOT_TOKEN in Netlify dashboard → Site settings → Environment variables.
+# Never commit secrets to this file.
 [context.production.environment]
   LOG_LEVEL = "INFO"
-  # BOT_TOKEN  ← set this in the Netlify dashboard, NOT here
 
 [context.deploy-preview.environment]
   LOG_LEVEL = "DEBUG"
 
 # --------------- Redirects / Rewrites -----------------------
-# Route /webhook to the Netlify Function for a cleaner URL (optional)
+# Clean URL: /webhook → /.netlify/functions/webhook
 [[redirects]]
   from   = "/webhook"
   to     = "/.netlify/functions/webhook"
   status = 200
 
-# --------------- HTTP Headers --------------------------------
+# --------------- HTTP Security Headers -----------------------
 [[headers]]
   for = "/.netlify/functions/*"
   [headers.values]
