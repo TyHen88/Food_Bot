@@ -11,7 +11,7 @@
 [build]
   # No frontend build step needed for a pure bot
   publish = "public"
-  command  = "echo 'No build step required'"
+  command  = "mkdir -p public && echo 'Bot deployed' > public/index.html"
 
 # --------------- Python Functions Runtime -------------------
 [functions]
