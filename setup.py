@@ -18,12 +18,12 @@ def read_requirements():
 setup(
     name="telegram-food-poll-bot",
     version="1.0.0",
-    author="Your Name",
-    author_email="your.email@example.com",
+    author="Henty",
+    author_email="[EMAIL_ADDRESS]",
     description="A Telegram bot that creates interactive polls from food menu text",
     long_description=read_readme(),
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/foot-auto-poll-bot",
+    url="https://github.com/TyHen88/Food_Bot.git",   
     packages=find_packages(),
     classifiers=[
         "Development Status :: 4 - Beta",
@@ -48,9 +48,9 @@ setup(
     include_package_data=True,
     zip_safe=False,
     keywords="telegram bot food poll menu ordering",
-    project_urls={
-        "Bug Reports": "https://github.com/yourusername/foot-auto-poll-bot/issues",
-        "Source": "https://github.com/yourusername/foot-auto-poll-bot",
-        "Documentation": "https://github.com/yourusername/foot-auto-poll-bot#readme",
-    },
+    # project_urls={
+    #     "Bug Reports": "https://github.com/yourusername/foot-auto-poll-bot/issues",
+    #     "Source": "https://github.com/yourusername/foot-auto-poll-bot",
+    #     "Documentation": "https://github.com/yourusername/foot-auto-poll-bot#readme",
+    # },
 ) 

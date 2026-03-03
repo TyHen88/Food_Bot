@@ -58,24 +58,27 @@ async def with_retry(func, *args, max_retries=3, **kwargs):
             await asyncio.sleep(2**attempt)
 
 def extract_menu_options(text: str):
-    """Extract menu options from text."""
+    """Extract menu options from text, accepting both "1. Option" and "1 Option" styles."""
     options = []
     for line in text.split('\n'):
         line = line.strip()
-        if re.match(r'^[១២៣៤៥៦1-6]\.\s*.+', line):
-            option_text = re.sub(r'^[១២៣៤៥៦1-6]\.\s*', '', line)
+        # Accept an optional dot after the number
+        if re.match(r'^[១២៣៤៥៦1-6]\.?(?:\s+|\s*$)', line):
+            # Remove the number and optional dot plus following whitespace
+            option_text = re.sub(r'^[១២៣៤៥៦1-6]\.?(?:\s+|\s*$)', '', line)
             if option_text and option_text not in options:
                 options.append(option_text)
     return options
 
 def is_food_menu_text(text: str):
-    """Check if text appears to be a food menu."""
+    """Check if text appears to be a food menu, allowing numbered items with or without a dot."""
     if not text:
         return False
     text = text.strip()
     if text.startswith("ម្ហូបថ្ងៃ"):
         return True
-    numbered_items = re.findall(r'^[១២៣៤៥៦1-6]\.\s*.+', text, re.MULTILINE)
+    # Accept lines that start with a Khmer or Arabic numeral optionally followed by a dot
+    numbered_items = re.findall(r'^[១២៣៤៥៦1-6]\.?.+', text, re.MULTILINE)
     return len(numbered_items) >= 2
 
 async def process_food_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):

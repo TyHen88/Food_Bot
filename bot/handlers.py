@@ -3,7 +3,8 @@ Message and callback handlers for the Telegram Food Poll Bot.
 """
 
 import logging
-from collections import Counter
+import os
+from pathlib import Path
 from telegram import Update
 from telegram.ext import (
     ContextTypes, MessageHandler, filters, PollAnswerHandler, 
@@ -199,6 +200,68 @@ async def handle_debug_command(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception as e:
         logger.error(f"Error in debug command: {e}")
 
+async def handle_pay_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handle /vongsa command — sends the KHQR payment QR code with a friendly message.
+    """
+    chat_id = update.effective_chat.id
+    qr_path = Path(__file__).parent.parent / "assets" / "payment_qr.png"
+
+    pay_message = (
+        "💳 *Vongsa Hourt — ការទូទាត់ប្រាក់* (Payment)\n\n"
+        "សូមស្កែន QR Code ខាងក្រោម ដើម្បីទូទាត់ប្រាក់តាម KHQR\n"
+        "_Please scan the QR code below to pay Vongsa Hourt via KHQR_\n\n"
+    )
+
+    try:
+        if qr_path.exists():
+            with open(qr_path, "rb") as photo:
+                await context.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=photo,
+                    caption=pay_message,
+                    parse_mode="Markdown",
+                )
+        else:
+            await update.message.reply_text(pay_message, parse_mode="Markdown")
+            logger.warning(f"QR image not found at {qr_path}")
+        logger.info(f"/vongsa command used by user {update.effective_user.id}")
+    except Exception as e:
+        logger.error(f"Error handling /vongsa command: {e}")
+        await update.message.reply_text("Sorry, could not send payment info right now. Please try again later.")
+
+
+async def handle_ty_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handle /ty command — sends Ty Hen's KHQR payment QR code.
+    """
+    chat_id = update.effective_chat.id
+    qr_path = Path(__file__).parent.parent / "assets" / "ty_qr.png"
+
+    pay_message = (
+        "💳 *TY HEN — ការទូទាត់ប្រាក់* (Payment)\n\n"
+        "សូមស្កែន QR Code ខាងក្រោម ដើម្បីទូទាត់ប្រាក់តាម KHQR\n"
+        "_Please scan the QR code below to pay Ty Hen via KHQR_\n\n"
+    )
+
+    try:
+        if qr_path.exists():
+            with open(qr_path, "rb") as photo:
+                await context.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=photo,
+                    caption=pay_message,
+                    parse_mode="Markdown",
+                )
+        else:
+            await update.message.reply_text(pay_message, parse_mode="Markdown")
+            logger.warning(f"TY QR image not found at {qr_path}")
+        logger.info(f"/ty command used by user {update.effective_user.id}")
+    except Exception as e:
+        logger.error(f"Error handling /ty command: {e}")
+        await update.message.reply_text("Sorry, could not send payment info right now. Please try again later.")
+
+
 def setup_handlers(application):
     """
     Register all handlers to the bot application.
@@ -209,6 +272,8 @@ def setup_handlers(application):
     # Command handlers
     application.add_handler(CommandHandler("start", handle_start_command))
     application.add_handler(CommandHandler("debug_send", handle_debug_command))
+    application.add_handler(CommandHandler("vongsa", handle_pay_command))
+    application.add_handler(CommandHandler("ty", handle_ty_command))
     
     # Message handlers (handle all text messages except commands)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -218,4 +283,3 @@ def setup_handlers(application):
     application.add_handler(CallbackQueryHandler(handle_callback_query))
     
     logger.info("All handlers registered successfully")
-
