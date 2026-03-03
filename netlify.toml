@@ -1,0 +1,48 @@
+# ============================================================
+# Netlify Configuration for Food Poll Telegram Bot
+# ============================================================
+# NOTE: Netlify does not support long-running processes.
+# This bot must run in WEBHOOK mode (not polling mode).
+# The webhook handler lives in netlify/functions/webhook.py
+# Set your Telegram webhook URL to:
+#   https://<your-site>.netlify.app/.netlify/functions/webhook
+# ============================================================
+
+[build]
+  # No frontend build step needed for a pure bot
+  publish = "public"
+  command  = "echo 'No build step required'"
+
+# --------------- Python Functions Runtime -------------------
+[functions]
+  directory         = "netlify/functions"
+  node_bundler      = "esbuild"
+
+# Tell Netlify to use the Python 3.11 runtime for .py functions
+[functions."webhook"]
+  runtime = "python3.11"
+
+# --------------- Environment Variables ----------------------
+# Do NOT commit real secrets here.
+# Set these in the Netlify dashboard → Site settings → Environment variables.
+[context.production.environment]
+  LOG_LEVEL = "INFO"
+  # BOT_TOKEN  ← set this in the Netlify dashboard, NOT here
+
+[context.deploy-preview.environment]
+  LOG_LEVEL = "DEBUG"
+
+# --------------- Redirects / Rewrites -----------------------
+# Route /webhook to the Netlify Function for a cleaner URL (optional)
+[[redirects]]
+  from   = "/webhook"
+  to     = "/.netlify/functions/webhook"
+  status = 200
+
+# --------------- HTTP Headers --------------------------------
+[[headers]]
+  for = "/.netlify/functions/*"
+  [headers.values]
+    X-Frame-Options        = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy        = "strict-origin-when-cross-origin"
