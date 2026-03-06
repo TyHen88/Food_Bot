@@ -2,9 +2,9 @@
 Configuration settings for the Telegram Food Poll Bot.
 """
 
-import os
 import logging
-from typing import Optional
+import os
+
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -21,39 +21,42 @@ LOG_FILE = os.getenv("LOG_FILE", "bot.log")
 
 # Timezone Configuration
 TIMEZONE = "Asia/Phnom_Penh"
-SCHEDULED_MESSAGE_TIME = "08:00"  # 8 AM
+WEEKDAY_REMINDER_MESSAGE_TIME = "8:00"  # 8:00 AM, Monday-Friday
+WEEKDAY_VONGSA_QR_TIME = "12:00"  # 12:00 PM, Monday-Friday
 
 # Poll Configuration
-POLL_QUESTION = "ជ្រើសរើសម្ហូបដែលអ្នកចូលចិត្ត!"
-ORDER_BUTTON_TEXT = "🛒 Order"
-CLOSE_ORDER_BUTTON_TEXT = "❌ Close Order"
-ORDER_INSTRUCTION_TEXT = "ចុចប៊ូតុងខាងក្រោមដើម្បីបញ្ជាទិញ៖"
+POLL_QUESTION = "តើថ្ងៃនេះចង់ញ៉ាំអ្វី?😋🍴"
+ORDER_BUTTON_TEXT = "Order"
+CLOSE_ORDER_BUTTON_TEXT = "Close Order"
+ORDER_INSTRUCTION_TEXT = "Please vote first, then press Order to show the summary."
 ORDER_NAME = "Seyha"
 
 # Message Templates
-WELCOME_MESSAGE = """សួស្តី! ខ្ញុំជា Bot ដែលបង្កើត Poll ដោយស្វ័យប្រវត្តិ។
+WELCOME_MESSAGE = (
+    "សួស្តី! ខ្ញុំជា Food Poll Bot។\n\n"
+    "របៀបប្រើ៖\n"
+    "- ផ្ញើម៉ឺនុយដែលមានលេខរៀង\n"
+    "- Bot នឹងបង្កើត poll អោយ\n"
+    "- ចុច Order ដើម្បីមើលសរុបការកុម្ម៉ង់"
+)
 
-របៀបប្រើប្រាស់៖
-១. ជ្រើសរើសមុខម្ហូបដែលអ្នកចង់ Order
-២. Vote មុខម្ហូបរបស់អ្នក
-៣. រង់ចាំការជ្រើសរើសរួចរាល់ រួចចុចប៊ូតុង Order 🛒"""
-
-DAILY_MESSAGE = "ថ្ងៃនេះបានម្ហូបអ្វី?"
+DAILY_MESSAGE = "តើថ្ងៃនេះបានម្ហូបអ្វី?😋🍴"
 
 # Error Messages
-ERROR_POLL_CREATION = "មានបញ្ហាក្នុងការបង្កើត poll: {}"
-ERROR_POLL_NOT_FOUND = "ខ្ញុំមិនអាចរកឃើញការបោះឆ្នោតនេះទេ។"
-ERROR_NO_ORDERS = "មិនមានការបញ្ជាទិញណាមួយឡើយ។"
-ERROR_NO_SELECTION = "❗ You haven't selected any food yet!"
-ORDER_CLOSED_MESSAGE = "✅ Order has been closed."
+ERROR_POLL_CREATION = "Failed to create poll: {}"
+ERROR_POLL_NOT_FOUND = "Poll not found. Please create a new menu poll."
+ERROR_NO_ORDERS = "No orders yet."
+ERROR_NO_SELECTION = "You haven't selected any food yet!"
+ORDER_CLOSED_MESSAGE = "Order has been closed."
+
 
 def setup_logging() -> None:
     """Setup logging configuration."""
     logging.basicConfig(
         level=getattr(logging, LOG_LEVEL),
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         handlers=[
             logging.FileHandler(LOG_FILE),
-            logging.StreamHandler()
-        ]
+            logging.StreamHandler(),
+        ],
     )

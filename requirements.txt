@@ -1,6 +1,7 @@
 # Core dependencies
 python-telegram-bot==20.1
 python-dotenv==1.1.0
+APScheduler>=3.10.4,<4
 
 # HTTP and networking
 httpx>=0.23.3
