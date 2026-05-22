@@ -46,6 +46,7 @@ from .scheduler import (
 )
 from .sheets import events as sheets_events
 from .sheets import orders as sheets_orders
+from .sheets import payers as sheets_payers
 from .sheets import repo as sheets_repo
 from .sheets import settings as sheets_settings
 from .sheets.client import is_configured
@@ -189,6 +190,16 @@ async def _take_order_snapshot(update: Update, poll_data: dict, poll_id: str) ->
             clicker_user_id=clicker_id,
             clicker_username=clicker_name,
         )
+        # Record the clicker as a payer (who pays / collects this order).
+        # Best-effort: a payer-tab problem must never report the order as failed.
+        try:
+            await sheets_payers.record_payment(
+                clicker_id,
+                username=(clicker.username if clicker else "") or "",
+                full_name=(clicker.full_name if clicker else "") or "",
+            )
+        except Exception as e:
+            logger.warning(f"record_payment failed for poll {poll_id} (non-fatal): {e}")
         return None
     except Exception as e:
         logger.exception(f"Order snapshot failed for poll {poll_id}: {e}")

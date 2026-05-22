@@ -32,8 +32,7 @@ from .config import (
     WEEKDAY_VONGSA_QR_TIME,
 )
 from .sheets import chats as sheets_chats
-from .sheets import events, polls, settings, votes
-from .sheets import repo as sheets_repo
+from .sheets import events, orders as sheets_orders, polls, settings, votes
 from .sheets.client import is_configured
 
 logger = logging.getLogger(__name__)
@@ -217,45 +216,26 @@ async def _snapshot_orders_at_cutoff(bot: Bot, payload: str = "") -> None:
         logger.info("Cutoff job: no open polls to snapshot")
         return
 
-    today = datetime.date.today().isoformat()
     snapshot_count = 0
 
     for poll in open_polls:
         poll_id = poll["poll_id"]
         chat_id = poll["chat_id"]
         selections_map = await votes.get_user_selections_map(poll_id)
-        if not selections_map:
-            await polls.close(poll_id)
-            await events.emit(
-                "ORDER_SNAPSHOT", entity_type="poll", entity_id=poll_id,
-                chat_id=chat_id, payload={"items": 0, "users": 0},
-            )
-            continue
+        users = len(selections_map)
 
-        seq = 0
-        for user_id, entry in selections_map.items():
-            user_name = entry.get("name", f"User{user_id}")
-            for item in entry.get("selections", []):
-                seq += 1
-                await sheets_repo.create("order", {
-                    "order_id": f"{poll_id}_{user_id}_{seq}",
-                    "poll_id": poll_id,
-                    "chat_id": chat_id,
-                    "user_id": user_id,
-                    "user_name": user_name,
-                    "item": item,
-                    "quantity": 1,
-                    "order_date": today,
-                    "notes": "",
-                    "created_at": sheets_repo.now_iso(),
-                })
-                snapshot_count += 1
+        # Same row shape as the Order button (one row per poll, item JSON
+        # array with per-voter user_id) so the calendar reads both alike.
+        # No clicker at cutoff time → paid_by stays empty.
+        saved = await sheets_orders.snapshot_from_poll(poll_id, chat_id)
+        if saved:
+            snapshot_count += 1
 
         await polls.close(poll_id)
         await events.emit(
             "ORDER_SNAPSHOT", entity_type="poll", entity_id=poll_id,
             chat_id=chat_id,
-            payload={"items": seq, "users": len(selections_map)},
+            payload={"saved": bool(saved), "users": users},
         )
 
     logger.info(f"Cutoff snapshot: wrote {snapshot_count} order row(s) across {len(open_polls)} poll(s)")

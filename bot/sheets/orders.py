@@ -44,12 +44,18 @@ def _today_date() -> str:
 
 
 def _build_item_json(selections_map: Dict[int, Dict[str, Any]]) -> str:
-    """Flatten {user_id: {name, selections}} into the JSON list shape."""
+    """Flatten {user_id: {name, selections}} into the JSON list shape.
+
+    Each entry carries the voter's `user_id` so the Mini App calendar can
+    filter an order down to a single member's own dishes (admins see all).
+    """
     entries: List[Dict[str, Any]] = []
     for user_id, entry in selections_map.items():
         name = entry.get("name") or f"User{user_id}"
         for sel in entry.get("selections") or []:
-            entries.append({"name": name, "item_name": sel, "qty": 1})
+            entries.append(
+                {"user_id": user_id, "name": name, "item_name": sel, "qty": 1}
+            )
     return json.dumps(entries, ensure_ascii=False)
 
 
@@ -120,3 +126,27 @@ async def list_by_date(date_str: str) -> List[Dict[str, Any]]:
         row for row in _mem_orders.values()
         if str(row.get("order_date", "")).startswith(date_str)
     ]
+
+
+async def list_in_range(
+    date_from: Optional[str] = None, date_to: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """All order rows whose `order_date` falls in [date_from, date_to].
+
+    Bounds are inclusive YYYY-MM-DD strings (lexical compare works because
+    order_date is always zero-padded ISO). Either bound may be None.
+    Powers the Mini App calendar's week view.
+    """
+    def in_range(row: Dict[str, Any]) -> bool:
+        d = str(row.get("order_date", ""))[:10]
+        if not d:
+            return False
+        if date_from and d < date_from:
+            return False
+        if date_to and d > date_to:
+            return False
+        return True
+
+    if is_configured():
+        return await repo.filter_rows("order", in_range)
+    return [row for row in _mem_orders.values() if in_range(row)]

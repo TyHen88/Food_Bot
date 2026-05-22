@@ -15,7 +15,7 @@ Conventions (see PLAN.md "Sheets design rules"):
 
 from typing import Dict, List
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Tab name → ordered list of column headers.
 # Order matters: first column is the PK; bootstrap.py writes headers in this order.
@@ -51,9 +51,17 @@ TABS: Dict[str, List[str]] = {
         "selected_options", "updated_at",
     ],
     "order": [
-        # item: JSON array — [{"name": "<user>", "item_name": "<food>", "qty": <n>}, ...]
+        # item: JSON array — [{"user_id": <id>, "name": "<user>", "item_name": "<food>", "qty": <n>}, ...]
+        # user_id/username here record the *clicker* (payer); per-voter
+        # identity lives in each item entry's user_id.
         "order_id", "poll_id", "chat_id", "user_id", "username",
         "item", "order_date", "created_at",
+    ],
+    "payer": [
+        # One row per person who has tapped the Order button (the payer).
+        # Upserted on each Order click; surfaced in the Settings "Paid list".
+        "user_id", "username", "full_name", "qr_filename", "khqr_text",
+        "times_paid", "last_paid_at", "created_at",
     ],
     "history": [
         "event_id", "event_type", "entity_type", "entity_id",

@@ -9,14 +9,15 @@ ACTIVITY_WINDOW_DAYS, otherwise "Inactive". Newly inserted rows with no
 votes yet fall back to comparing against `last_active_at`.
 """
 
+import json
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Set
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from ..sheets import repo
 from ..sheets.client import is_configured
-from .auth import require_admin
+from .auth import require_member
 
 router = APIRouter(prefix="/members", tags=["members"])
 
@@ -33,13 +34,55 @@ def _parse_iso(s: Any) -> datetime | None:
         return None
 
 
+async def _chat_participants(chat_id: str) -> Set[str]:
+    """user_ids who took part in `chat_id`: voted on its polls or appear
+    in its orders (as a voter inside item JSON, or as the order's payer)."""
+    wanted = str(chat_id).strip()
+    poll_ids = {
+        str(p.get("poll_id", "")).strip()
+        for p in await repo.list_all("poll")
+        if str(p.get("chat_id", "")).strip() == wanted
+    }
+    participants: Set[str] = set()
+
+    for v in await repo.list_all("vote"):
+        if str(v.get("poll_id", "")).strip() in poll_ids:
+            uid = str(v.get("user_id", "")).strip()
+            if uid:
+                participants.add(uid)
+
+    for o in await repo.list_all("order"):
+        if str(o.get("chat_id", "")).strip() != wanted:
+            continue
+        payer = str(o.get("user_id", "")).strip()
+        if payer:
+            participants.add(payer)
+        try:
+            items = json.loads(o.get("item") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            items = []
+        for it in items if isinstance(items, list) else []:
+            uid = str(it.get("user_id", "")).strip()
+            if uid:
+                participants.add(uid)
+
+    return participants
+
+
 @router.get("")
-async def list_members(_: dict = Depends(require_admin)) -> List[Dict[str, Any]]:
+async def list_members(
+    chat_id: Optional[str] = Query(None, description="Restrict to one chat's participants."),
+    _: dict = Depends(require_member),
+) -> List[Dict[str, Any]]:
     if not is_configured():
         return []
 
     users = await repo.list_all("user")
     votes = await repo.list_all("vote")
+
+    allowed: Optional[Set[str]] = None
+    if chat_id:
+        allowed = await _chat_participants(chat_id)
 
     # Map user_id → latest vote.updated_at (timezone-aware where possible).
     latest_vote: Dict[str, datetime] = {}
@@ -60,6 +103,8 @@ async def list_members(_: dict = Depends(require_admin)) -> List[Dict[str, Any]]
     for u in users:
         uid = str(u.get("user_id", "")).strip()
         if not uid:
+            continue
+        if allowed is not None and uid not in allowed:
             continue
 
         # Pick the freshest timestamp available for this user.

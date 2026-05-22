@@ -263,7 +263,7 @@
     </span>
     <div class="nav-label">Schedules</div>
   </a>
-  <a class="nav-item active" href="/templates.html">
+  <a class="nav-item active admin-only" href="/templates.html">
     <span class="nav-icon">
       <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
     </span>
@@ -409,6 +409,11 @@
 
   // ─── Boot ───────────────────────────────────────────────────
   window.pageInit = async function () {
+    // Templates is admin-only — bounce members who deep-link here.
+    if (!(window.FoodBot && window.FoodBot.isAdmin)) {
+      location.href = "/";
+      return;
+    }
     await loadStyle();
     renderStyleList();
   };
