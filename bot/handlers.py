@@ -549,6 +549,9 @@ async def handle_app_command(
     button to the bot's direct-link Mini App (t.me/<bot>?startapp), which
     requires the Main Mini App to be configured in BotFather.
     """
+    if not update.message:
+        return
+
     if not WEBHOOK_URL:
         await update.message.reply_text(
             "Mini App requires WEBHOOK_URL to be configured "
@@ -556,26 +559,37 @@ async def handle_app_command(
         )
         return
 
+    # Ensure WEBHOOK_URL starts with https:// or http:// (Telegram WebAppInfo requires https://, but let's be robust)
+    base_url = WEBHOOK_URL
+    if not base_url.startswith("https://") and not base_url.startswith("http://"):
+        base_url = f"https://{base_url}"
+
     chat = update.effective_chat
     is_private = bool(chat) and chat.type == "private"
 
-    if is_private:
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🍱 Open Food Bot", web_app=WebAppInfo(url=f"{WEBHOOK_URL}/")),
-        ]])
-    else:
-        # Group/supergroup: web_app buttons are private-only → link to the
-        # direct-link Mini App instead (needs Main Mini App set in BotFather).
-        username = context.bot.username
-        link = f"https://t.me/{username}?startapp" if username else f"{WEBHOOK_URL}/"
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🍱 Open Food Bot", url=link),
-        ]])
+    try:
+        if is_private:
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("🍱 Open Food Bot", web_app=WebAppInfo(url=f"{base_url}/")),
+            ]])
+        else:
+            # Group/supergroup: web_app buttons are private-only → link to the
+            # direct-link Mini App instead (needs Main Mini App set in BotFather).
+            username = context.bot.username
+            link = f"https://t.me/{username}?startapp" if username else f"{base_url}/"
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("🍱 Open Food Bot", url=link),
+            ]])
 
-    await update.message.reply_text(
-        "Tap below to open the Food Bot calendar.",
-        reply_markup=keyboard,
-    )
+        await update.message.reply_text(
+            "Tap below to open the Food Bot calendar.",
+            reply_markup=keyboard,
+        )
+    except Exception as e:
+        logger.error(f"Error in handle_app_command: {e}", exc_info=True)
+        await update.message.reply_text(
+            f"Failed to open Mini App: {str(e)}"
+        )
 
 
 @admin_only
@@ -583,19 +597,34 @@ async def handle_admin_command(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     """`/admin` — open the Mini App admin panel via a WebApp button."""
+    if not update.message:
+        return
+
     if not WEBHOOK_URL:
         await update.message.reply_text(
             "Mini App requires WEBHOOK_URL to be configured "
             "(set it to your public HTTPS URL)."
         )
         return
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("Open admin panel", web_app=WebAppInfo(url=f"{WEBHOOK_URL}/")),
-    ]])
-    await update.message.reply_text(
-        "Tap below to open the Food Bot admin panel.",
-        reply_markup=keyboard,
-    )
+
+    # Ensure WEBHOOK_URL starts with https:// or http:// (Telegram WebAppInfo requires https://)
+    base_url = WEBHOOK_URL
+    if not base_url.startswith("https://") and not base_url.startswith("http://"):
+        base_url = f"https://{base_url}"
+
+    try:
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("Open admin panel", web_app=WebAppInfo(url=f"{base_url}/")),
+        ]])
+        await update.message.reply_text(
+            "Tap below to open the Food Bot admin panel.",
+            reply_markup=keyboard,
+        )
+    except Exception as e:
+        logger.error(f"Error in handle_admin_command: {e}", exc_info=True)
+        await update.message.reply_text(
+            f"Failed to open admin panel: {str(e)}"
+        )
 
 
 async def handle_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
