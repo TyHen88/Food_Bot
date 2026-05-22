@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 BOT_COMMANDS = [
     # Member-facing
     BotCommand("start", "Welcome & instructions"),
+    BotCommand("app", "Open the Food Bot mini app"),
     BotCommand("subscribe", "Subscribe this chat to reminders"),
     BotCommand("unsubscribe", "Unsubscribe this chat from reminders"),
     BotCommand("vongsa", "Pay Vongsa Hourt (KHQR)"),

@@ -539,6 +539,29 @@ async def handle_schedule_disable_command(
     await _toggle_schedule(update, context, active=False)
 
 
+async def handle_app_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """`/app` — anyone (incl. group members) opens the Mini App via a WebApp button.
+
+    The chat menu / attachment button is private-chat-only in Telegram, so an
+    inline web_app button is the only way to launch the app from a group.
+    """
+    if not WEBHOOK_URL:
+        await update.message.reply_text(
+            "Mini App requires WEBHOOK_URL to be configured "
+            "(set it to your public HTTPS URL)."
+        )
+        return
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🍱 Open Food Bot", web_app=WebAppInfo(url=f"{WEBHOOK_URL}/")),
+    ]])
+    await update.message.reply_text(
+        "Tap below to open the Food Bot calendar.",
+        reply_markup=keyboard,
+    )
+
+
 @admin_only
 async def handle_admin_command(
     update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -569,6 +592,7 @@ def setup_handlers(application) -> None:
     application.add_handler(CommandHandler("debug_qr", handle_debug_qr_command))
     application.add_handler(CommandHandler("vongsa", handle_pay_command))
     application.add_handler(CommandHandler("ty", handle_ty_command))
+    application.add_handler(CommandHandler("app", handle_app_command))
 
     # Admin commands (decorated with @admin_only)
     application.add_handler(CommandHandler("admin", handle_admin_command))
