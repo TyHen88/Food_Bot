@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>History — Food Bot</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <main>
+    <header class="nav"><a href="/">Home</a><span class="crumb-sep">›</span> History</header>
+    <h1>Audit log</h1>
+
+    <label for="filter">Filter by event type</label>
+    <select id="filter">
+      <option value="">All events</option>
+      <option>POLL_CREATED</option>
+      <option>VOTE_CAST</option>
+      <option>ORDER_CLOSED</option>
+      <option>ORDER_SNAPSHOT</option>
+      <option>CHAT_SUBSCRIBED</option>
+      <option>CHAT_UNSUBSCRIBED</option>
+      <option>SETTING_UPDATED</option>
+      <option>TEMPLATE_CREATED</option>
+      <option>TEMPLATE_DELETED</option>
+      <option>SCHEDULE_UPDATED</option>
+    </select>
+
+    <div id="list" style="margin-top: 12px"></div>
+    <div id="pager" style="margin-top: 12px; display: flex; justify-content: space-between; align-items: center"></div>
+  </main>
+
+  <script src="/app.js"></script>
+  <script>
+    const PAGE_SIZE = 25;
+    let offset = 0;
+
+    window.pageInit = async function () {
+      document.getElementById("filter").addEventListener("change", () => {
+        offset = 0;
+        refresh();
+      });
+      await refresh();
+    };
+
+    async function refresh() {
+      const fb = window.FoodBot;
+      const eventType = document.getElementById("filter").value;
+      const list = document.getElementById("list");
+      const pager = document.getElementById("pager");
+      list.textContent = "";
+
+      const qs = new URLSearchParams({ limit: PAGE_SIZE, offset });
+      if (eventType) qs.set("event_type", eventType);
+
+      let data;
+      try {
+        data = await fb.api(`/history?${qs.toString()}`);
+      } catch (err) {
+        list.appendChild(fb.el("div", { class: "empty" }, err.message));
+        pager.textContent = "";
+        return;
+      }
+      if (!data.items.length) {
+        list.appendChild(fb.el("div", { class: "empty" }, "No events to show."));
+        pager.textContent = "";
+        return;
+      }
+
+      for (const row of data.items) {
+        const ts = (row.created_at || "").replace("T", " ").replace(/\+.*$/, "");
+        const card = fb.el("div", { class: "row" }, [
+          fb.el("div", { class: "label" }, [
+            fb.el("div", { class: "key" }, row.event_type || "(unknown)"),
+            fb.el("div", { class: "meta" }, `${ts}  •  ${row.entity_type || ""} ${row.entity_id || ""}`),
+            row.payload ? fb.el("div", { class: "meta", style: "margin-top: 4px; word-break: break-all" }, row.payload) : null,
+          ]),
+        ]);
+        list.appendChild(card);
+      }
+
+      pager.textContent = "";
+      pager.appendChild(fb.el("button", {
+        class: "secondary small",
+        disabled: offset === 0 ? "true" : null,
+        onclick: () => { offset = Math.max(0, offset - PAGE_SIZE); refresh(); },
+      }, "← Newer"));
+      pager.appendChild(fb.el("span", { class: "hint" }, `${offset + 1}–${Math.min(offset + data.items.length, data.total)} of ${data.total}`));
+      pager.appendChild(fb.el("button", {
+        class: "secondary small",
+        disabled: offset + PAGE_SIZE >= data.total ? "true" : null,
+        onclick: () => { offset += PAGE_SIZE; refresh(); },
+      }, "Older →"));
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en" data-role="loading">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Schedules — Food Bot</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #F7F5F0;
+    --surface: #FFFFFF;
+    --surface2: #F0EDE6;
+    --border: #E2DDD6;
+    --text: #1A1714;
+    --text-muted: #8C8880;
+    --accent: #2D6A4F;
+    --accent-light: #E8F4EE;
+    --orange: #E07B39;
+    --orange-light: #FDF0E7;
+    --blue: #3A6EA8;
+    --blue-light: #EAF0F8;
+    --pink: #C2566A;
+    --pink-light: #FAE8EC;
+    --yellow: #C49B30;
+    --yellow-light: #FBF4E0;
+    --gray-light: #F0EDE6;
+    --today: #1A1714;
+    --shadow-sm: 0 2px 8px rgba(26,23,20,0.07);
+    --shadow-md: 0 4px 16px rgba(26,23,20,0.08);
+    --bottom-nav: 72px;
+    --frame-w: 430px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html { background: #ECE9E1; height: 100%; }
+  body {
+    font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    min-height: 100dvh;
+    max-width: var(--frame-w);
+    margin: 0 auto;
+    position: relative;
+    overflow-x: hidden;
+    box-shadow: 0 0 40px rgba(26,23,20,0.06);
+    padding-bottom: var(--bottom-nav);
+  }
+  @media (min-width: 768px) {
+    body { box-shadow: 0 0 64px rgba(26,23,20,0.08); }
+  }
+
+  /* ── HEADER ── */
+  .header {
+    background: var(--surface);
+    padding: max(env(safe-area-inset-top, 8px), 8px) 16px 10px;
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  .header h1 {
+    font-family: 'DM Serif Display', serif;
+    font-size: 20px;
+    font-weight: 400;
+    letter-spacing: -0.4px;
+    line-height: 1.1;
+    margin-top: 2px;
+  }
+  .header .hint {
+    color: var(--text-muted);
+    font-size: 11px;
+    margin-top: 3px;
+    line-height: 1.35;
+  }
+  .header .hint code {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 10px;
+    background: var(--surface2);
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+
+  /* ── LIST ── */
+  .schedule-list { padding: 10px 12px 12px; }
+  .empty {
+    text-align: center;
+    color: var(--text-muted);
+    padding: 40px 24px;
+    font-size: 12px;
+  }
+  .sched-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    box-shadow: var(--shadow-sm);
+    transition: transform .12s, box-shadow .12s;
+  }
+  .sched-card.inactive { opacity: 0.65; }
+  .sched-icon {
+    width: 32px; height: 32px;
+    border-radius: 9px;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+    font-size: 14px;
+    border-left: 3px solid currentColor;
+  }
+  .sched-icon.ic-orange { background: var(--orange-light); color: var(--orange); }
+  .sched-icon.ic-green  { background: var(--accent-light); color: var(--accent); }
+  .sched-icon.ic-blue   { background: var(--blue-light); color: var(--blue); }
+  .sched-icon.ic-gray   { background: var(--gray-light); color: #6B6B6B; border-left-color: #AAA; }
+  .sched-icon span { line-height: 1; }
+  .sched-info { flex: 1; min-width: 0; }
+  .sched-name {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .sched-meta {
+    font-size: 10px;
+    color: var(--text-muted);
+    margin-top: 2px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex-wrap: wrap;
+  }
+  .sched-pill {
+    display: inline-flex; align-items: center;
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .03em;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: var(--surface2);
+    color: var(--text-muted);
+  }
+  .sched-pill.type-orange { background: var(--orange-light); color: var(--orange); }
+  .sched-pill.type-green  { background: var(--accent-light); color: var(--accent); }
+  .sched-pill.type-blue   { background: var(--blue-light); color: var(--blue); }
+
+  /* iOS-style toggle (from prototype) */
+  .toggle {
+    width: 38px; height: 22px; border-radius: 11px;
+    background: var(--border);
+    position: relative;
+    cursor: pointer;
+    transition: background .2s;
+    flex-shrink: 0;
+    border: none;
+    padding: 0;
+  }
+  .toggle.on { background: var(--accent); }
+  .toggle::after {
+    content: '';
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 4px rgba(0,0,0,.2);
+    position: absolute;
+    top: 2px; left: 2px;
+    transition: transform .2s;
+  }
+  .toggle.on::after { transform: translateX(16px); }
+  .toggle:disabled { opacity: 0.5; cursor: not-allowed; }
+  .toggle.busy::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 14px;
+    background: rgba(0,0,0,0.05);
+  }
+
+  /* ── BOTTOM NAV ── */
+  .bottom-nav {
+    position: fixed;
+    bottom: 0; left: 50%;
+    transform: translateX(-50%);
+    width: 100%; max-width: var(--frame-w);
+    height: var(--bottom-nav);
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-around;
+    padding: 0 8px env(safe-area-inset-bottom, 8px);
+    z-index: 200;
+  }
+  .nav-item {
+    display: flex; flex-direction: column; align-items: center; gap: 3px;
+    cursor: pointer; padding: 8px 10px; border-radius: 12px;
+    transition: background .15s;
+    text-decoration: none;
+    flex: 1;
+    min-width: 0;
+    color: inherit;
+  }
+  .nav-item:active { background: var(--surface2); }
+  .nav-icon {
+    width: 22px; height: 22px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-muted);
+  }
+  .nav-label {
+    font-size: 10px; font-weight: 600;
+    color: var(--text-muted);
+    letter-spacing: 0.01em;
+  }
+  .nav-item.active .nav-icon { color: var(--accent); }
+  .nav-item.active .nav-label { color: var(--accent); }
+
+  /* ── Toast ── */
+  .toast {
+    position: fixed; bottom: calc(var(--bottom-nav) + 16px); left: 50%;
+    transform: translateX(-50%);
+    background: var(--text); color: var(--surface);
+    padding: 10px 16px; border-radius: 999px;
+    font-size: 13px; font-weight: 500;
+    opacity: 0; transition: opacity .2s;
+    pointer-events: none; z-index: 400;
+    max-width: calc(var(--frame-w) - 40px);
+  }
+  .toast.show { opacity: .95; }
+  .toast.error { background: #B83A3A; }
+
+  /* ── Dark mode (mirrors index.html) ── */
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161412;
+      --surface: #1E1B17;
+      --surface2: #2A261F;
+      --border: #332F27;
+      --text: #F2EDE4;
+      --text-muted: #8A8070;
+      --accent: #58D69E;
+      --accent-light: rgba(45, 106, 79, 0.22);
+      --orange-light: rgba(224, 123, 57, 0.18);
+      --blue-light: rgba(58, 110, 168, 0.20);
+      --gray-light: rgba(255, 255, 255, 0.08);
+      --today: #F2EDE4;
+    }
+    html { background: #0F0D0B; }
+    .sched-icon.ic-orange { color: #F5BC8C; }
+    .sched-icon.ic-green  { color: #A7E5C3; }
+    .sched-icon.ic-blue   { color: #9BBDE0; }
+    .sched-pill.type-orange { color: #F5BC8C; }
+    .sched-pill.type-green  { color: #A7E5C3; }
+    .sched-pill.type-blue   { color: #9BBDE0; }
+  }
+</style>
+</head>
+<body>
+
+<header class="header">
+  <h1>Schedules</h1>
+  <p class="hint admin-only">
+    Toggle reminders on or off. To add or change a schedule's time, edit the
+    <code>schedule</code> tab in the spreadsheet directly.
+  </p>
+  <p class="hint member-only">
+    The recurring reminders this bot will send. Ask an admin to change them.
+  </p>
+</header>
+
+<main class="schedule-list" id="list"></main>
+
+<!-- Bottom nav -->
+<nav class="bottom-nav">
+  <a class="nav-item" href="/">
+    <span class="nav-icon">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+    </span>
+    <div class="nav-label">Calendar</div>
+  </a>
+  <a class="nav-item active" href="/schedule.html">
+    <span class="nav-icon">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+    </span>
+    <div class="nav-label">Schedules</div>
+  </a>
+  <a class="nav-item" href="/templates.html">
+    <span class="nav-icon">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+    </span>
+    <div class="nav-label">Templates</div>
+  </a>
+  <a class="nav-item" href="/members.html">
+    <span class="nav-icon">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+    </span>
+    <div class="nav-label">Members</div>
+  </a>
+  <a class="nav-item admin-only" href="/settings.html">
+    <span class="nav-icon">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+    </span>
+    <div class="nav-label">Settings</div>
+  </a>
+</nav>
+
+<div class="toast" id="toast"></div>
+
+<script src="/app.js"></script>
+<script>
+  // ─── Helpers ──────────────────────────────────────────────
+  const DAY_ORDER = { MON:0, TUE:1, WED:2, THU:3, FRI:4, SAT:5, SUN:6 };
+  const DAY_PRETTY = { MON:"Mon", TUE:"Tue", WED:"Wed", THU:"Thu", FRI:"Fri", SAT:"Sat", SUN:"Sun" };
+
+  function actionIconChar(t) {
+    switch ((t || "").toUpperCase()) {
+      case "TEXT":     return "💬";
+      case "QR_PHOTO": return "📷";
+      case "POLL":     return "🗳️";
+      default:         return "⏰";
+    }
+  }
+  function actionColorClass(t) {
+    switch ((t || "").toUpperCase()) {
+      case "TEXT":     return "orange";
+      case "QR_PHOTO": return "green";
+      case "POLL":     return "blue";
+      default:         return "gray";
+    }
+  }
+  function actionTypeLabel(t) {
+    switch ((t || "").toUpperCase()) {
+      case "TEXT":     return "Text";
+      case "QR_PHOTO": return "QR";
+      case "POLL":     return "Poll";
+      default:         return t || "—";
+    }
+  }
+  function formatDays(daysRaw) {
+    const codes = (daysRaw || "")
+      .split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
+    if (!codes.length) return "—";
+    const sorted = codes.slice().sort((a,b) => (DAY_ORDER[a] ?? 9) - (DAY_ORDER[b] ?? 9));
+    // Weekday-shortcut: MON–FRI
+    const set = new Set(sorted);
+    const weekdays = ["MON","TUE","WED","THU","FRI"];
+    if (set.size === 5 && weekdays.every((d) => set.has(d))) return "Weekdays";
+    if (set.size === 7) return "Every day";
+    if (set.size === 2 && set.has("SAT") && set.has("SUN")) return "Weekends";
+    return sorted.map((c) => DAY_PRETTY[c] || c).join(" · ");
+  }
+  function formatTime(s) {
+    if (!s) return "—";
+    const m = String(s).match(/^(\d{1,2}):(\d{2})/);
+    if (!m) return s;
+    const h = parseInt(m[1], 10), mm = m[2];
+    const period = h >= 12 ? "PM" : "AM";
+    const hh = h === 0 ? 12 : (h > 12 ? h - 12 : h);
+    return `${hh}:${mm} ${period}`;
+  }
+
+  // ─── Toast (matches calendar) ─────────────────────────────
+  let toastTimer = null;
+  function toast(msg, kind) {
+    const el = document.getElementById("toast");
+    el.textContent = msg;
+    el.classList.remove("error");
+    if (kind === "error") el.classList.add("error");
+    el.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove("show"), 2400);
+  }
+
+  // ─── Render ───────────────────────────────────────────────
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({
+      "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"
+    }[c]));
+  }
+
+  async function refresh() {
+    const list = document.getElementById("list");
+    list.textContent = "";
+
+    let rows;
+    try {
+      rows = await window.FoodBot.api("/schedules");
+    } catch (err) {
+      const e = document.createElement("div");
+      e.className = "empty";
+      e.textContent = err.message || String(err);
+      list.appendChild(e);
+      return;
+    }
+    if (!rows || !rows.length) {
+      const e = document.createElement("div");
+      e.className = "empty";
+      e.textContent = "No schedules defined.";
+      list.appendChild(e);
+      return;
+    }
+
+    for (const row of rows) {
+      list.appendChild(renderCard(row));
+    }
+  }
+
+  function renderCard(row) {
+    const active = String(row.is_active).toUpperCase() === "TRUE";
+    const color = actionColorClass(row.action_type);
+    const card = document.createElement("div");
+    card.className = "sched-card" + (active ? "" : " inactive");
+
+    card.innerHTML = `
+      <div class="sched-icon ic-${color}"><span>${actionIconChar(row.action_type)}</span></div>
+      <div class="sched-info">
+        <div class="sched-name">${escapeHtml(row.name || row.schedule_id)}</div>
+        <div class="sched-meta">
+          <span class="sched-pill type-${color}">${escapeHtml(actionTypeLabel(row.action_type))}</span>
+          <span>${escapeHtml(formatTime(row.time_of_day))}</span>
+          <span>·</span>
+          <span>${escapeHtml(formatDays(row.days_of_week))}</span>
+        </div>
+      </div>
+    `;
+
+    if (window.FoodBot && window.FoodBot.isAdmin) {
+      const toggle = document.createElement("button");
+      toggle.className = "toggle" + (active ? " on" : "");
+      toggle.setAttribute("aria-label", active ? "Disable" : "Enable");
+      toggle.addEventListener("click", () => onToggle(row, toggle));
+      card.appendChild(toggle);
+    }
+    // Members: render the card but omit the toggle entirely — no replacement.
+    return card;
+  }
+
+  async function onToggle(row, toggleEl) {
+    if (toggleEl.disabled) return;
+    const wasOn = toggleEl.classList.contains("on");
+    const nextActive = !wasOn;
+
+    // Optimistic UI
+    toggleEl.classList.toggle("on", nextActive);
+    toggleEl.classList.add("busy");
+    toggleEl.disabled = true;
+
+    try {
+      await window.FoodBot.api(
+        `/schedules/${encodeURIComponent(row.schedule_id)}/toggle`,
+        { method: "POST", body: JSON.stringify({ active: nextActive }) },
+      );
+      toast(`${nextActive ? "Enabled" : "Disabled"} ${row.name || row.schedule_id}`);
+      // Reflect inactive dim on the card.
+      const card = toggleEl.closest(".sched-card");
+      if (card) card.classList.toggle("inactive", !nextActive);
+    } catch (err) {
+      // Revert on failure.
+      toggleEl.classList.toggle("on", wasOn);
+      toast(err.message || String(err), "error");
+    } finally {
+      toggleEl.classList.remove("busy");
+      toggleEl.disabled = false;
+    }
+  }
+
+  window.pageInit = async function () {
+    await refresh();
+  };
+</script>
+</body>
+</html>

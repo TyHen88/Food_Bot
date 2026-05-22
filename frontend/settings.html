@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Settings — Food Bot</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <main>
+    <header class="nav"><a href="/">Home</a><span class="crumb-sep">›</span> Settings</header>
+    <h1>Settings</h1>
+    <p class="hint">Tap a value to edit. Saves immediately.</p>
+    <div id="list"></div>
+  </main>
+
+  <script src="/app.js"></script>
+  <script>
+    window.pageInit = async function () {
+      const fb = window.FoodBot;
+      const list = document.getElementById("list");
+      list.textContent = "";
+
+      let rows;
+      try {
+        rows = await fb.api("/settings");
+      } catch (err) {
+        list.appendChild(fb.el("div", { class: "empty" }, err.message));
+        return;
+      }
+      if (!rows || rows.length === 0) {
+        list.appendChild(fb.el("div", { class: "empty" }, "No settings yet."));
+        return;
+      }
+
+      for (const row of rows) {
+        const card = fb.el("div", { class: "row" }, [
+          fb.el("div", { class: "label" }, [
+            fb.el("div", { class: "key" }, row.key),
+            fb.el("div", { class: "meta" }, row.description || row.value_type || ""),
+            fb.el("div", { class: "meta", style: "margin-top: 4px; color: var(--text); white-space: pre-wrap" }, row.value || "(empty)"),
+          ]),
+          fb.el("div", { class: "actions" }, [
+            fb.el("button", {
+              class: "secondary small",
+              onclick: () => editSetting(row),
+            }, "Edit"),
+          ]),
+        ]);
+        list.appendChild(card);
+      }
+    };
+
+    async function editSetting(row) {
+      const fb = window.FoodBot;
+      const next = window.prompt(`Edit ${row.key}`, row.value || "");
+      if (next === null || next === row.value) return;
+      try {
+        await fb.api(`/settings/${encodeURIComponent(row.key)}`, {
+          method: "PUT",
+          body: JSON.stringify({ value: next }),
+        });
+        fb.toast(`Saved ${row.key}`);
+        location.reload();
+      } catch (err) {
+        fb.toast(err.message, "error");
+      }
+    }
+  </script>
+</body>
+</html>
