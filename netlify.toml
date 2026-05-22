@@ -1,0 +1,49 @@
+[build]
+  # Build command to install dependencies
+  command = "pip install -r requirements.txt"
+  
+  # Directory to publish (static frontend)
+  publish = "frontend"
+  
+  # Functions directory for serverless functions
+  functions = "netlify/functions"
+
+[build.environment]
+  PYTHON_VERSION = "3.11"
+
+[[redirects]]
+  # Redirect API routes to Netlify Functions
+  from = "/api/*"
+  to = "/.netlify/functions/api/:splat"
+  status = 200
+
+[[redirects]]
+  # Health check redirect
+  from = "/health"
+  to = "/.netlify/functions/health"
+  status = 200
+
+[[redirects]]
+  # Webhook endpoint redirect
+  from = "/webhook/*"
+  to = "/.netlify/functions/webhook/:splat"
+  status = 200
+
+[[redirects]]
+  # SPA fallback for frontend
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+[dev]
+  # Local development settings
+  command = "uvicorn main:app --host 0.0.0.0 --port 8000"
+  port = 8000
+  targetPort = 8000
+  publish = "frontend"
+  autoLaunch = false
+
+# Note: Netlify Functions are serverless and stateless. For a Telegram bot
+# that requires long-running processes (webhook polling, APScheduler),
+# consider using Railway, Render, or other platforms that support
+# long-running Python services instead.
