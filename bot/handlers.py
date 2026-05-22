@@ -542,10 +542,12 @@ async def handle_schedule_disable_command(
 async def handle_app_command(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """`/app` — anyone (incl. group members) opens the Mini App via a WebApp button.
+    """`/app` — open the Mini App. Works in both private chats and groups.
 
-    The chat menu / attachment button is private-chat-only in Telegram, so an
-    inline web_app button is the only way to launch the app from a group.
+    Telegram only allows `web_app` inline buttons in PRIVATE chats. In groups
+    a web_app button raises Button_type_invalid, so there we use a normal URL
+    button to the bot's direct-link Mini App (t.me/<bot>?startapp), which
+    requires the Main Mini App to be configured in BotFather.
     """
     if not WEBHOOK_URL:
         await update.message.reply_text(
@@ -553,9 +555,23 @@ async def handle_app_command(
             "(set it to your public HTTPS URL)."
         )
         return
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🍱 Open Food Bot", web_app=WebAppInfo(url=f"{WEBHOOK_URL}/")),
-    ]])
+
+    chat = update.effective_chat
+    is_private = bool(chat) and chat.type == "private"
+
+    if is_private:
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🍱 Open Food Bot", web_app=WebAppInfo(url=f"{WEBHOOK_URL}/")),
+        ]])
+    else:
+        # Group/supergroup: web_app buttons are private-only → link to the
+        # direct-link Mini App instead (needs Main Mini App set in BotFather).
+        username = context.bot.username
+        link = f"https://t.me/{username}?startapp" if username else f"{WEBHOOK_URL}/"
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🍱 Open Food Bot", url=link),
+        ]])
+
     await update.message.reply_text(
         "Tap below to open the Food Bot calendar.",
         reply_markup=keyboard,
@@ -582,6 +598,11 @@ async def handle_admin_command(
     )
 
 
+async def handle_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Catch-all so a handler exception is logged, not left unhandled."""
+    logger.error("Unhandled exception while processing update", exc_info=context.error)
+
+
 def setup_handlers(application) -> None:
     """Register all handlers to the bot application."""
     # Member-facing commands
@@ -604,5 +625,7 @@ def setup_handlers(application) -> None:
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(PollAnswerHandler(handle_poll_answer))
     application.add_handler(CallbackQueryHandler(handle_callback_query))
+
+    application.add_error_handler(handle_error)
 
     logger.info("All handlers registered successfully")
