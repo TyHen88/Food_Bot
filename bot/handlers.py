@@ -112,22 +112,30 @@ async def _record_user_if_new(tg_user) -> None:
         logger.warning(f"_record_user_if_new failed for user {tg_user.id}: {e}")
 
 
-def _calendar_keyboard(chat):
-    """A persistent one-button reply keyboard that opens the Mini App calendar.
+def _calendar_keyboard(chat, bot_username: str | None = None):
+    """One-button "View Calendar" markup that opens the Mini App.
 
-    web_app keyboard buttons are private-chat only — in groups they raise
-    Button_type_invalid — so return None outside private chats or when
-    WEBHOOK_URL isn't configured, and the caller just omits the keyboard.
+    Private chats get a persistent reply-keyboard `web_app` button. Groups
+    can't use `web_app` keyboard buttons (Telegram raises
+    Button_type_invalid), so they get an inline button to the direct-link
+    Mini App (t.me/<bot>?startapp), which needs the Main Mini App set in
+    BotFather. Returns None when WEBHOOK_URL isn't configured.
     """
-    if not WEBHOOK_URL:
+    if not WEBHOOK_URL or not chat:
         return None
-    if not chat or chat.type != "private":
-        return None
-    return ReplyKeyboardMarkup(
-        [[KeyboardButton("📅 View Calendar", web_app=WebAppInfo(url=f"{WEBHOOK_URL}/"))]],
-        resize_keyboard=True,
-        is_persistent=True,
-    )
+
+    if chat.type == "private":
+        return ReplyKeyboardMarkup(
+            [[KeyboardButton("📅 View Calendar", web_app=WebAppInfo(url=f"{WEBHOOK_URL}/"))]],
+            resize_keyboard=True,
+            is_persistent=True,
+        )
+
+    # Group / supergroup → inline direct-link button.
+    link = f"https://t.me/{bot_username}?startapp" if bot_username else f"{WEBHOOK_URL}/"
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("📅 View Calendar", url=link),
+    ]])
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -328,7 +336,9 @@ async def handle_start_command(update: Update, context: ContextTypes.DEFAULT_TYP
             subscribed_by=user.id if user else None,
         )
         welcome = await sheets_settings.get("WELCOME_MESSAGE", WELCOME_MESSAGE)
-        await update.message.reply_text(welcome, reply_markup=_calendar_keyboard(chat))
+        await update.message.reply_text(
+            welcome, reply_markup=_calendar_keyboard(chat, context.bot.username),
+        )
         logger.info(f"Start command from user {user.id if user else '?'}")
     except Exception as e:
         logger.error(f"Error handling start command: {e}")
