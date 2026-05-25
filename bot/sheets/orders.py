@@ -11,9 +11,11 @@ One row per poll (keyed `order_id = poll_id`). The row records the
         ...
     ]
 
-Latest clicker wins: re-tapping the button on the same poll upserts the
-same row with the new clicker's user_id/username, so the Mini App's
-"Paid by" always reflects the most recent person who took ownership.
+First clicker wins: the first person to tap Order on a poll is recorded as
+the owner (user_id/username) and is never replaced. Re-tapping by anyone
+later keeps that original clicker and only refreshes the `item` snapshot so
+late votes still get captured. The Mini App's "Paid by" therefore reflects
+whoever ordered first.
 
 In-memory fallback for local dev (no Sheets configured) mirrors votes.py.
 """
@@ -70,6 +72,12 @@ async def snapshot_from_poll(
     Read all current votes for `poll_id` and upsert ONE `order` row
     representing this Order-button click.
 
+    First clicker wins: if an order row already exists for this poll, the
+    original clicker (user_id/username) and created_at are preserved and
+    only the `item` snapshot is refreshed. The returned row's user_id
+    therefore identifies whoever ordered first — callers can compare it to
+    the current clicker to tell whether this tap actually created the order.
+
     Returns the saved row (or None if there were no votes to snapshot).
     """
     selections_map = await votes.get_user_selections_map(poll_id)
@@ -80,22 +88,37 @@ async def snapshot_from_poll(
     if not item_json or item_json == "[]":
         return None
 
+    # First clicker wins: keep the original owner + created_at if a row
+    # already exists; only a brand-new order records the current clicker.
+    existing = await get_by_poll(poll_id)
+    if existing:
+        owner_user_id = existing.get("user_id") or clicker_user_id or ""
+        owner_username = existing.get("username") or clicker_username or ""
+        created_at = existing.get("created_at") or repo.now_iso()
+        order_date = existing.get("order_date") or _today_date()
+    else:
+        owner_user_id = clicker_user_id or ""
+        owner_username = clicker_username or ""
+        created_at = repo.now_iso()
+        order_date = _today_date()
+
     row = {
         "order_id": poll_id,
         "poll_id": poll_id,
         "chat_id": chat_id,
-        "user_id": clicker_user_id or "",
-        "username": clicker_username or "",
+        "user_id": owner_user_id,
+        "username": owner_username,
         "item": item_json,
-        "order_date": _today_date(),
-        "created_at": repo.now_iso(),
+        "order_date": order_date,
+        "created_at": created_at,
     }
 
     if is_configured():
         logger.info(
             f"snapshot_from_poll: writing order row poll_id={poll_id} "
+            f"owner={owner_user_id} ({owner_username!r}) "
             f"clicker={clicker_user_id} ({clicker_username!r}) "
-            f"item_count={len(json.loads(item_json))}"
+            f"existing={bool(existing)} item_count={len(json.loads(item_json))}"
         )
         # Block on the actual Sheets write so any error (missing tab,
         # permission denied, column mismatch) surfaces to the caller

@@ -8,6 +8,8 @@ from pathlib import Path
 from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
     Update,
     WebAppInfo,
 )
@@ -110,6 +112,24 @@ async def _record_user_if_new(tg_user) -> None:
         logger.warning(f"_record_user_if_new failed for user {tg_user.id}: {e}")
 
 
+def _calendar_keyboard(chat):
+    """A persistent one-button reply keyboard that opens the Mini App calendar.
+
+    web_app keyboard buttons are private-chat only — in groups they raise
+    Button_type_invalid — so return None outside private chats or when
+    WEBHOOK_URL isn't configured, and the caller just omits the keyboard.
+    """
+    if not WEBHOOK_URL:
+        return None
+    if not chat or chat.type != "private":
+        return None
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton("📅 View Calendar", web_app=WebAppInfo(url=f"{WEBHOOK_URL}/"))]],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle incoming text messages and process menu text."""
     if not update.message or not update.message.text:
@@ -185,21 +205,26 @@ async def _take_order_snapshot(update: Update, poll_data: dict, poll_id: str) ->
             or (clicker.username if clicker else None)
             or (f"User{clicker_id}" if clicker_id else "")
         )
-        await sheets_orders.snapshot_from_poll(
+        saved = await sheets_orders.snapshot_from_poll(
             poll_id, chat_id,
             clicker_user_id=clicker_id,
             clicker_username=clicker_name,
         )
-        # Record the clicker as a payer (who pays / collects this order).
-        # Best-effort: a payer-tab problem must never report the order as failed.
-        try:
-            await sheets_payers.record_payment(
-                clicker_id,
-                username=(clicker.username if clicker else "") or "",
-                full_name=(clicker.full_name if clicker else "") or "",
-            )
-        except Exception as e:
-            logger.warning(f"record_payment failed for poll {poll_id} (non-fatal): {e}")
+        # First clicker wins: only the person who actually created the order
+        # row (its user_id) is the payer. A later clicker leaves the order
+        # untouched, so we must not record them as a payer either.
+        is_first_clicker = bool(saved) and str(saved.get("user_id")) == str(clicker_id)
+        if is_first_clicker:
+            # Record the clicker as a payer (who pays / collects this order).
+            # Best-effort: a payer-tab problem must never report the order as failed.
+            try:
+                await sheets_payers.record_payment(
+                    clicker_id,
+                    username=(clicker.username if clicker else "") or "",
+                    full_name=(clicker.full_name if clicker else "") or "",
+                )
+            except Exception as e:
+                logger.warning(f"record_payment failed for poll {poll_id} (non-fatal): {e}")
         return None
     except Exception as e:
         logger.exception(f"Order snapshot failed for poll {poll_id}: {e}")
@@ -303,7 +328,7 @@ async def handle_start_command(update: Update, context: ContextTypes.DEFAULT_TYP
             subscribed_by=user.id if user else None,
         )
         welcome = await sheets_settings.get("WELCOME_MESSAGE", WELCOME_MESSAGE)
-        await update.message.reply_text(welcome)
+        await update.message.reply_text(welcome, reply_markup=_calendar_keyboard(chat))
         logger.info(f"Start command from user {user.id if user else '?'}")
     except Exception as e:
         logger.error(f"Error handling start command: {e}")

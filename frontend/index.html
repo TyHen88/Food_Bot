@@ -577,7 +577,7 @@
   const MONTHS_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
   const START_H = 7;
-  const END_H = 19;            // inclusive (renders rows up to 19:00 → 8 PM label)
+  const END_H = 22;            // inclusive — last row label is 10 PM (22:00)
   const SLOT_H = 56;           // px per hour, matches CSS
 
   const COLOR_MAP = {
@@ -812,9 +812,7 @@
     const top = (h - START_H) * SLOT_H;
     const height = Math.max(SLOT_H - 2, 28);
 
-    const title = p.question || p.chat_title || "Order";
-    const dishWord = p.item_count === 1 ? "dish" : "dishes";
-    const subtitle = `${formatTimeStr(p.time)} · ${p.item_count} ${dishWord}`;
+    const timeLabel = formatTimeStr(p.time);
     const chatChip = p.chat_title || (p.chat_id ? `chat #${String(p.chat_id).slice(-4)}` : "");
 
     // Column-share layout: 2px outer gutter, 1px between columns.
@@ -832,8 +830,7 @@
     block.style.left = leftPx;
     block.style.width = innerW;
     block.innerHTML = `
-      <div class="event-title">${escapeHtml(title)}</div>
-      <div class="event-time-label">${escapeHtml(subtitle)}</div>
+      <div class="event-time-label">${escapeHtml(timeLabel)}</div>
       ${chatChip ? `<div class="event-chat">${escapeHtml(chatChip)}</div>` : ""}
     `;
     block.addEventListener("click", (e) => {
