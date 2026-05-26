@@ -86,6 +86,12 @@ async def lifespan(app: FastAPI):
     app.state.application = application
 
     await application.initialize()
+    # PTB only invokes post_init from run_polling()/run_webhook(), which we
+    # don't use — FastAPI owns the lifecycle and we drive initialize()/start()
+    # manually. Without this call, _post_init never runs, so the command menu
+    # (set_my_commands) and the APScheduler reminder jobs are never set up.
+    if getattr(application, "post_init", None):
+        await application.post_init(application)
     await application.start()
 
     polling_active = False
