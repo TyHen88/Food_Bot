@@ -82,7 +82,15 @@ async def list_members(
 
     allowed: Optional[Set[str]] = None
     if chat_id:
-        allowed = await _chat_participants(chat_id)
+        wanted = str(chat_id).strip()
+        # Union of users tagged with this chat_id directly and those derived
+        # from votes/orders, so legacy rows (blank chat_id) still resolve.
+        allowed = {
+            str(u.get("user_id", "")).strip()
+            for u in users
+            if str(u.get("chat_id", "")).strip() == wanted
+        }
+        allowed |= await _chat_participants(chat_id)
 
     # Map user_id → latest vote.updated_at (timezone-aware where possible).
     latest_vote: Dict[str, datetime] = {}

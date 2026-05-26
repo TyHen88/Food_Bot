@@ -62,12 +62,14 @@ async def _record_user(update: Update) -> None:
     if not is_configured() or not update.effective_user:
         return
     u = update.effective_user
+    chat_id = update.effective_chat.id if update.effective_chat else ""
     try:
         existing = await sheets_repo.find_by_pk("user", u.id)
         if existing:
             await sheets_repo.update("user", u.id, {
                 "username": u.username or existing.get("username", ""),
                 "full_name": u.full_name or existing.get("full_name", ""),
+                "chat_id": chat_id or existing.get("chat_id", ""),
                 "last_active_at": sheets_repo.now_iso(),
             })
         else:
@@ -76,6 +78,7 @@ async def _record_user(update: Update) -> None:
                 "username": u.username or "",
                 "full_name": u.full_name or "",
                 "phone_number": "",
+                "chat_id": chat_id,
                 "role": "MEMBER",
                 "language": "KH",
                 "dietary_notes": "",
@@ -86,10 +89,12 @@ async def _record_user(update: Update) -> None:
         logger.warning(f"_record_user failed for user {u.id}: {e}")
 
 
-async def _record_user_if_new(tg_user) -> None:
+async def _record_user_if_new(tg_user, chat_id=None) -> None:
     """
     Insert-only variant: add a new user row when they vote, but leave
-    existing rows untouched. Used from poll-answer handling.
+    existing rows untouched. Used from poll-answer handling. `chat_id`,
+    when known, is stored on newly inserted rows so members can be looked
+    up by chat.
     """
     if not is_configured() or not tg_user:
         return
@@ -102,6 +107,7 @@ async def _record_user_if_new(tg_user) -> None:
             "username": tg_user.username or "",
             "full_name": tg_user.full_name or "",
             "phone_number": "",
+            "chat_id": chat_id or "",
             "role": "MEMBER",
             "language": "KH",
             "dietary_notes": "",
@@ -178,7 +184,7 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     # Add the voter to the `user` tab on their first vote — no-op if already present.
-    await _record_user_if_new(poll_answer.user)
+    await _record_user_if_new(poll_answer.user, poll_data.get("chat_id"))
 
     options = poll_data.get("options", [])
     current_selections = [
