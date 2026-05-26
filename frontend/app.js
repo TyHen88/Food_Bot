@@ -13,6 +13,20 @@
       '[data-role="member"]  .admin-only,' +
       '[data-role="admin"]   .member-only { display: none !important; }';
     document.head.appendChild(style);
+
+    // Apply the last-known role synchronously, before /api/me resolves, so
+    // admin-only nav items (Templates, Settings) render in their final state
+    // immediately. Without this the bottom nav loads with the items hidden,
+    // then reflows to show them once /api/me returns — which looks like the
+    // tab bar flickering on every navigation. loadAuth() re-confirms below
+    // and corrects the attribute if the role actually changed; server-side
+    // require_admin still gates every admin endpoint regardless.
+    try {
+      const cached = localStorage.getItem("fb_role");
+      if (cached === "admin" || cached === "member") {
+        document.documentElement.dataset.role = cached;
+      }
+    } catch (_) { /* localStorage unavailable — fall back to the loading gate */ }
   })();
 
   const tg = window.Telegram && window.Telegram.WebApp;
@@ -104,6 +118,10 @@
     try {
       const me = await window.FoodBot.api("/me");
       window.FoodBot.isAdmin = !!(me && me.is_admin);
+      // Cache for the next page load's synchronous role gate (see injectRoleGate).
+      try {
+        localStorage.setItem("fb_role", window.FoodBot.isAdmin ? "admin" : "member");
+      } catch (_) { /* ignore */ }
     } catch (_) {
       window.FoodBot.isAdmin = false;
     }
