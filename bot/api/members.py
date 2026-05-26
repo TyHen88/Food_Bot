@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, Query
 
 from ..sheets import repo
 from ..sheets.client import is_configured
-from .auth import require_member
+from .auth import caller_chat_id, require_member
 
 router = APIRouter(prefix="/members", tags=["members"])
 
@@ -72,10 +72,15 @@ async def _chat_participants(chat_id: str) -> Set[str]:
 @router.get("")
 async def list_members(
     chat_id: Optional[str] = Query(None, description="Restrict to one chat's participants."),
-    _: dict = Depends(require_member),
+    auth: dict = Depends(require_member),
 ) -> List[Dict[str, Any]]:
     if not is_configured():
         return []
+
+    # No explicit chat_id (e.g. opened from the bot DM, where init-data has no
+    # chat) → scope to the caller's most recent chat from their user row.
+    if not chat_id:
+        chat_id = await caller_chat_id(auth)
 
     users = await repo.list_all("user")
     votes = await repo.list_all("vote")

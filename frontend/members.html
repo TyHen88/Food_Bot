@@ -358,8 +358,14 @@
 
   function launchChatId() {
     const tg = window.Telegram && window.Telegram.WebApp;
-    const chat = tg && tg.initDataUnsafe && tg.initDataUnsafe.chat;
-    return chat && chat.id != null ? String(chat.id) : "";
+    const u = tg && tg.initDataUnsafe;
+    // Attachment-menu launches include `chat`; direct-link (?startapp=<chat_id>)
+    // launches from a group carry it in start_param instead. If neither is
+    // present (opened from the bot DM), return "" and let the server scope to
+    // the caller's most recent chat.
+    if (u && u.chat && u.chat.id != null) return String(u.chat.id);
+    if (u && u.start_param) return String(u.start_param);
+    return "";
   }
 
   async function refresh() {

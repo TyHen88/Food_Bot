@@ -20,8 +20,22 @@ from fastapi import Header, HTTPException, status
 
 from ..auth import is_admin
 from ..config import ADMIN_USER_IDS, BOT_TOKEN, DEV_BYPASS_AUTH, WEBHOOK_URL
+from ..sheets import repo
 
 logger = logging.getLogger(__name__)
+
+
+async def caller_chat_id(auth: dict) -> str:
+    """The chat_id recorded on the caller's `user` row (their most recent
+    chat). Used to scope list endpoints when the Mini App can't supply an
+    explicit chat_id — e.g. launched from the bot DM rather than a group,
+    where Telegram's init-data carries no chat context. Returns "" if
+    unknown."""
+    uid = (auth.get("user") or {}).get("id")
+    if uid is None:
+        return ""
+    row = await repo.find_by_pk("user", uid)
+    return str(row.get("chat_id", "")).strip() if row else ""
 
 
 def _dev_bypass_active() -> bool:

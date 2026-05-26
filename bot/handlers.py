@@ -137,8 +137,14 @@ def _calendar_keyboard(chat, bot_username: str | None = None):
             is_persistent=True,
         )
 
-    # Group / supergroup → inline direct-link button.
-    link = f"https://t.me/{bot_username}?startapp" if bot_username else f"{WEBHOOK_URL}/"
+    # Group / supergroup → inline direct-link button. Pass the chat id through
+    # the startapp parameter so the Mini App can scope the calendar/members to
+    # this chat (Telegram exposes it as initDataUnsafe.start_param). chat ids
+    # are -?\d+, which fits startapp's [A-Za-z0-9_-] charset.
+    if bot_username:
+        link = f"https://t.me/{bot_username}?startapp={chat.id}"
+    else:
+        link = f"{WEBHOOK_URL}/"
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("📅 View Calendar", url=link),
     ]])

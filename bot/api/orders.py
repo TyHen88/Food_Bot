@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, Query
 from ..sheets import orders as sheets_orders
 from ..sheets import repo
 from ..sheets.client import is_configured
-from .auth import require_member
+from .auth import caller_chat_id, require_member
 
 router = APIRouter(prefix="/orders", tags=["orders"])
 
@@ -137,15 +137,20 @@ async def list_orders(
                                    description="Inclusive YYYY-MM-DD upper bound on order_date."),
     date: Optional[str] = Query(None, description="Single-day shorthand (YYYY-MM-DD)."),
     chat_id: Optional[str] = Query(None, description="Restrict to one chat's orders."),
-    _: dict = Depends(require_member),
+    auth: dict = Depends(require_member),
 ) -> List[Dict[str, Any]]:
     """Orders in a date range, annotated for the calendar. Role-aware.
 
     When `chat_id` is given (the Mini App passes the chat it was launched
-    from), only that chat's orders are returned.
+    from), only that chat's orders are returned. If it's absent (e.g. opened
+    from the bot DM), we fall back to the caller's most recent chat so the
+    calendar stays scoped to their group.
     """
     if date and not (date_from or date_to):
         date_from = date_to = date
+
+    if not chat_id:
+        chat_id = await caller_chat_id(auth)
 
     rows = await sheets_orders.list_in_range(date_from, date_to)
     if chat_id:
