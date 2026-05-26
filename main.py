@@ -9,6 +9,7 @@ Local dev (WEBHOOK_URL empty): start with `python main.py` to fall back to
 long polling (the legacy mode), so you can iterate without ngrok.
 """
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -35,6 +36,35 @@ logger = logging.getLogger(__name__)
 FRONTEND_DIR = Path(__file__).parent / "frontend"
 
 
+async def _webhook_watchdog(application, expected_url: str, secret_token: str | None,
+                            interval: int = 60) -> None:
+    """Re-register the webhook if Telegram ever reports it missing/wrong.
+
+    A dying old container during a rolling deploy — or an accidental local
+    polling run on the same token — can delete the webhook out from under a
+    healthy instance. Without this, the bot silently stops receiving updates
+    until someone redeploys or revokes the token. This loop checks every
+    `interval`s and re-sets the webhook if it has drifted from expected_url.
+    """
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            info = await application.bot.get_webhook_info()
+            if info.url != expected_url:
+                kwargs = {"url": expected_url, "drop_pending_updates": False}
+                if secret_token:
+                    kwargs["secret_token"] = secret_token
+                await application.bot.set_webhook(**kwargs)
+                logger.warning(
+                    f"Webhook was '{info.url or '(empty)'}', expected "
+                    f"'{expected_url}'. Re-registered by watchdog."
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"Webhook watchdog check failed: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Start the PTB application alongside FastAPI; tear it down on shutdown."""
@@ -59,6 +89,7 @@ async def lifespan(app: FastAPI):
     await application.start()
 
     polling_active = False
+    watchdog_task = None
     if WEBHOOK_URL:
         full_url = f"{WEBHOOK_URL}{WEBHOOK_PATH}"
         kwargs = {"url": full_url, "drop_pending_updates": True}
@@ -66,6 +97,11 @@ async def lifespan(app: FastAPI):
             kwargs["secret_token"] = WEBHOOK_SECRET
         await application.bot.set_webhook(**kwargs)
         logger.info(f"Webhook registered at {full_url}")
+        # Self-heal if the webhook gets deleted (e.g. an old container's
+        # shutdown during a rolling deploy). See _webhook_watchdog.
+        watchdog_task = asyncio.create_task(
+            _webhook_watchdog(application, full_url, WEBHOOK_SECRET or None)
+        )
     else:
         # Local dev: no public HTTPS URL → start long polling inside the
         # FastAPI process so the bot still receives updates while serving
@@ -84,16 +120,24 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        if watchdog_task:
+            watchdog_task.cancel()
+            try:
+                await watchdog_task
+            except asyncio.CancelledError:
+                pass
         if polling_active:
             try:
                 await application.updater.stop()
             except Exception as e:
                 logger.warning(f"Failed to stop polling on shutdown: {e}")
-        if WEBHOOK_URL:
-            try:
-                await application.bot.delete_webhook(drop_pending_updates=False)
-            except Exception as e:
-                logger.warning(f"Failed to delete webhook on shutdown: {e}")
+        # NOTE: deliberately do NOT delete the webhook here. On a rolling
+        # deploy the new container sets the webhook before the old one shuts
+        # down; deleting it on shutdown would race and remove the webhook the
+        # new instance just registered, leaving the bot unable to receive any
+        # updates (the "bot dies on every deploy" bug). The webhook URL is
+        # stable, so the next startup re-sets it idempotently. Polling mode
+        # (WEBHOOK_URL empty) already clears the webhook on startup.
         await application.stop()
         await application.shutdown()
         await sheets_cache.stop_refresh_loop()
