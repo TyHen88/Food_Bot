@@ -15,7 +15,7 @@ Conventions (see PLAN.md "Sheets design rules"):
 
 from typing import Dict, List
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # Tab name → ordered list of column headers.
 # Order matters: first column is the PK; bootstrap.py writes headers in this order.
@@ -46,7 +46,12 @@ TABS: Dict[str, List[str]] = {
         "subscribed_at", "subscribed_by",
     ],
     "schedule": [
+        # action_type/payload are legacy (TEXT/QR_PHOTO). New schedules use
+        # message_text + image (a Telegram file_id from upload, or an assets/
+        # filename) and send whichever is set. run_date set => one-time on that
+        # date (DateTrigger); empty => recurring weekly via days_of_week.
         "schedule_id", "name", "action_type", "payload",
+        "message_text", "image", "run_date",
         "days_of_week", "time_of_day", "target_chat_ids",
         "is_active", "created_at",
     ],

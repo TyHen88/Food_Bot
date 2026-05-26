@@ -257,6 +257,10 @@
     transition: all .12s;
   }
   .day-chip.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .datetime-row { display: flex; gap: 10px; }
+  .datetime-row input { flex: 1; }
+  .field input[type="file"] { height: auto; padding: 9px 12px; }
+  .field-hint { font-size: 11px; color: var(--text-muted); margin-top: 5px; }
   .modal-actions { display: flex; gap: 10px; padding: 8px 20px 0; }
   .btn {
     flex: 1; height: 46px; border-radius: 12px; border: none; cursor: pointer;
@@ -373,24 +377,29 @@
         <label for="f-name">Name</label>
         <input id="f-name" type="text" placeholder="Morning reminder" />
       </div>
+      <!-- Action: a text message and/or an uploaded image. -->
       <div class="field">
-        <label for="f-action">Action</label>
-        <select id="f-action">
-          <option value="TEXT">Send text</option>
-          <option value="QR_PHOTO">Send QR photo</option>
-        </select>
+        <label for="f-text">Message text</label>
+        <input id="f-text" type="text" placeholder="Type the message (optional if image)" />
       </div>
       <div class="field">
-        <label for="f-payload" id="f-payload-label">Text (leave blank to use Daily message)</label>
-        <input id="f-payload" type="text" placeholder="" />
+        <label for="f-image-file">Image (optional)</label>
+        <input id="f-image-file" type="file" accept="image/*" />
+        <div id="f-image-status" class="field-hint"></div>
+        <input id="f-image" type="hidden" />
       </div>
       <div class="field">
-        <label>Days</label>
+        <label>Repeat on days (for recurring)</label>
         <div class="day-picker" id="f-days"></div>
       </div>
+      <!-- Date | Time inline. A date makes it a one-time schedule (days ignored). -->
       <div class="field">
-        <label for="f-time">Time (24h HH:MM)</label>
-        <input id="f-time" type="time" />
+        <label>Date &amp; Time</label>
+        <div class="datetime-row">
+          <input id="f-date" type="date" />
+          <input id="f-time" type="time" />
+        </div>
+        <div class="field-hint">Set a date for a one-time run; leave it empty to repeat on the selected days.</div>
       </div>
       <div class="field">
         <label for="f-targets">Target chats</label>
@@ -575,7 +584,7 @@
           <span class="sched-pill type-${color}">${escapeHtml(actionTypeLabel(row.action_type))}</span>
           <span>${escapeHtml(formatTime(row.time_of_day))}</span>
           <span>·</span>
-          <span>${escapeHtml(formatDays(row.days_of_week))}</span>
+          <span>${escapeHtml(row.run_date ? ("once " + row.run_date) : formatDays(row.days_of_week))}</span>
         </div>
       </div>
     `;
@@ -615,16 +624,37 @@
     return Array.from(document.querySelectorAll("#f-days .day-chip.on"))
       .map((c) => c.dataset.day).join(",");
   }
-  function syncPayloadLabel() {
-    const action = document.getElementById("f-action").value;
-    const label = document.getElementById("f-payload-label");
-    const input = document.getElementById("f-payload");
-    if (action === "QR_PHOTO") {
-      label.textContent = "Image filename in assets/";
-      input.placeholder = "payment_qr.png";
-    } else {
-      label.textContent = "Text (leave blank to use Daily message)";
-      input.placeholder = "";
+  // Read a File as base64 (without the data: prefix).
+  function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => {
+        const s = String(r.result || "");
+        resolve(s.includes(",") ? s.split(",", 2)[1] : s);
+      };
+      r.onerror = () => reject(new Error("Could not read file"));
+      r.readAsDataURL(file);
+    });
+  }
+
+  // Upload the chosen image → store the returned Telegram file_id in #f-image.
+  async function onImagePicked(e) {
+    const file = e.target.files && e.target.files[0];
+    const status = document.getElementById("f-image-status");
+    if (!file) return;
+    status.textContent = "Uploading…";
+    try {
+      const data_base64 = await fileToBase64(file);
+      const res = await window.FoodBot.api("/schedules/upload-image", {
+        method: "POST",
+        body: JSON.stringify({ data_base64, filename: file.name }),
+      });
+      document.getElementById("f-image").value = (res && res.file_id) || "";
+      status.textContent = "✓ Image attached";
+    } catch (err) {
+      document.getElementById("f-image").value = "";
+      status.textContent = "";
+      toast(err.message || String(err), "error");
     }
   }
 
@@ -632,14 +662,20 @@
     editingId = row ? row.schedule_id : null;
     document.getElementById("formTitle").textContent = row ? "Edit schedule" : "New schedule";
     document.getElementById("f-name").value = row ? (row.name || "") : "";
-    document.getElementById("f-action").value =
-      row && row.action_type ? String(row.action_type).toUpperCase() : "TEXT";
-    document.getElementById("f-payload").value = row ? (row.payload || "") : "";
+    // Message text (fall back to legacy payload for TEXT rows).
+    const legacyText = row && String(row.action_type).toUpperCase() === "TEXT" ? (row.payload || "") : "";
+    document.getElementById("f-text").value = row ? (row.message_text || legacyText) : "";
+    // Image (file_id or assets filename); legacy QR_PHOTO payload is a filename.
+    const legacyImg = row && String(row.action_type).toUpperCase() === "QR_PHOTO" ? (row.payload || "") : "";
+    document.getElementById("f-image").value = row ? (row.image || legacyImg) : "";
+    document.getElementById("f-image-file").value = "";
+    document.getElementById("f-image-status").textContent =
+      document.getElementById("f-image").value ? "✓ Image attached" : "";
+    document.getElementById("f-date").value = row ? (row.run_date || "") : "";
     document.getElementById("f-time").value =
       row && row.time_of_day ? String(row.time_of_day).slice(0, 5) : "08:00";
     document.getElementById("f-targets").value = row ? (row.target_chat_ids || "ALL") : "ALL";
     renderDayPicker(row ? row.days_of_week : "MON,TUE,WED,THU,FRI");
-    syncPayloadLabel();
     // When opened from a group, schedules are auto-scoped to it: hide the
     // free-text "Target chats" field (saveForm sets it to the launch chat).
     const targetsField = document.getElementById("f-targets").closest(".field");
@@ -652,12 +688,17 @@
   async function saveForm() {
     const days = selectedDays();
     const time = document.getElementById("f-time").value;
+    const date = document.getElementById("f-date").value;          // "" or YYYY-MM-DD
+    const text = document.getElementById("f-text").value.trim();
+    const image = document.getElementById("f-image").value.trim();  // file_id or filename
     if (!time) { toast("Pick a time", "error"); return; }
-    if (!days) { toast("Pick at least one day", "error"); return; }
+    if (!text && !image) { toast("Add a message or an image", "error"); return; }
+    if (!date && !days) { toast("Pick a date, or at least one day", "error"); return; }
     const body = {
       name: document.getElementById("f-name").value.trim(),
-      action_type: document.getElementById("f-action").value,
-      payload: document.getElementById("f-payload").value,
+      message_text: text,
+      image: image,
+      run_date: date,
       days_of_week: days,
       time_of_day: time,
     };
@@ -741,7 +782,7 @@
     });
     document.getElementById("formSave").addEventListener("click", saveForm);
     document.getElementById("formDelete").addEventListener("click", deleteForm);
-    document.getElementById("f-action").addEventListener("change", syncPayloadLabel);
+    document.getElementById("f-image-file").addEventListener("change", onImagePicked);
     await refresh();
   };
 </script>

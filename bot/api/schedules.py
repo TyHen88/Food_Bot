@@ -36,11 +36,17 @@ class ScheduleToggle(BaseModel):
     active: bool
 
 
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
 class ScheduleBody(BaseModel):
     """Create/update payload. All fields optional on update (PATCH-style)."""
     name: Optional[str] = None
     action_type: Optional[str] = None
     payload: Optional[str] = None
+    message_text: Optional[str] = None   # text to send
+    image: Optional[str] = None          # Telegram file_id (uploaded) or assets/ filename
+    run_date: Optional[str] = None       # YYYY-MM-DD => one-time; "" => recurring weekly
     days_of_week: Optional[str] = None
     time_of_day: Optional[str] = None
     target_chat_ids: Optional[str] = None
@@ -59,6 +65,24 @@ class ScheduleBody(BaseModel):
         if v is not None and not _TIME_RE.match(v.strip()):
             raise ValueError("time_of_day must be HH:MM (24h)")
         return v.strip() if v else v
+
+    @field_validator("run_date")
+    @classmethod
+    def _check_date(cls, v):
+        if v is None:
+            return v
+        v = v.strip()
+        if v == "":
+            return v
+        if not _DATE_RE.match(v):
+            raise ValueError("run_date must be YYYY-MM-DD")
+        try:
+            from datetime import date
+            y, m, d = (int(x) for x in v.split("-"))
+            date(y, m, d)
+        except ValueError:
+            raise ValueError("run_date is not a valid calendar date")
+        return v
 
     @field_validator("days_of_week")
     @classmethod
@@ -106,6 +130,65 @@ async def list_schedules(
     return rows
 
 
+class ImageUpload(BaseModel):
+    data_base64: str          # base64 of the image bytes (data: URL prefix tolerated)
+    filename: Optional[str] = None
+
+
+@router.post("/upload-image")
+async def upload_image(
+    body: ImageUpload,
+    request: Request,
+    auth: dict = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Accept a base64 image, register it with Telegram, and return a reusable
+    file_id to store on the schedule. We capture the file_id by sending the
+    photo to the uploader's own chat with the bot (then deleting it) — file_ids
+    are reusable across chats, so the scheduled job can later send it anywhere.
+    Requires the admin to have started a DM with the bot."""
+    import base64
+    import binascii
+    import io
+
+    raw = body.data_base64 or ""
+    if raw.startswith("data:") and "," in raw:
+        raw = raw.split(",", 1)[1]
+    try:
+        blob = base64.b64decode(raw, validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail="Invalid base64 image data.")
+    if not blob:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail="Empty image.")
+    if len(blob) > 8 * 1024 * 1024:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                            detail="Image too large (max 8MB).")
+
+    user_id = (auth.get("user") or {}).get("id")
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Cannot determine the uploader's chat.")
+
+    bot = request.app.state.application.bot
+    bio = io.BytesIO(blob)
+    bio.name = body.filename or "upload.jpg"
+    try:
+        msg = await bot.send_photo(chat_id=int(user_id), photo=bio)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Could not register image — open a DM with the bot (/start) first. ({e})",
+        )
+    file_id = msg.photo[-1].file_id if msg.photo else ""
+    # Tidy up the capture message in the uploader's DM (best effort).
+    try:
+        await bot.delete_message(chat_id=int(user_id), message_id=msg.message_id)
+    except Exception:
+        pass
+    return {"file_id": file_id}
+
+
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_schedule(
     body: ScheduleBody,
@@ -113,13 +196,28 @@ async def create_schedule(
     auth: dict = Depends(require_admin),
 ) -> Dict[str, Any]:
     _require_configured()
-    if not body.action_type or not body.time_of_day:
+    if not body.time_of_day:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="action_type and time_of_day are required.",
+            detail="time_of_day is required.",
         )
+    message_text = (body.message_text or "").strip()
+    image = (body.image or "").strip()
+    if not message_text and not image:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Provide a message text and/or an image.",
+        )
+    run_date = (body.run_date or "").strip()
+    if not run_date and not (body.days_of_week or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Pick a date (one-time) or at least one weekday (recurring).",
+        )
+    # Derived for legacy compatibility; the scheduler uses message_text/image.
+    action_type = body.action_type or ("QR_PHOTO" if image else "TEXT")
 
-    base = _slugify(body.name or body.action_type)
+    base = _slugify(body.name or action_type)
     sid = base
     # Ensure a unique schedule_id.
     n = 1
@@ -130,9 +228,12 @@ async def create_schedule(
     row = {
         "schedule_id": sid,
         "name": body.name or sid,
-        "action_type": body.action_type,
+        "action_type": action_type,
         "payload": body.payload or "",
-        "days_of_week": body.days_of_week or "",
+        "message_text": message_text,
+        "image": image,
+        "run_date": run_date,
+        "days_of_week": "" if run_date else (body.days_of_week or ""),
         "time_of_day": body.time_of_day,
         "target_chat_ids": body.target_chat_ids or "ALL",
         "is_active": "TRUE" if (body.is_active is None or body.is_active) else "FALSE",
@@ -166,7 +267,18 @@ async def update_schedule(
         fields["action_type"] = body.action_type
     if body.payload is not None:
         fields["payload"] = body.payload
-    if body.days_of_week is not None:
+    if body.message_text is not None:
+        fields["message_text"] = body.message_text
+    if body.image is not None:
+        fields["image"] = body.image
+        # Keep legacy action_type roughly in sync for display.
+        fields.setdefault("action_type", "QR_PHOTO" if body.image.strip() else "TEXT")
+    if body.run_date is not None:
+        fields["run_date"] = body.run_date.strip()
+        # A one-time date and weekly recurrence are mutually exclusive.
+        if body.run_date.strip():
+            fields["days_of_week"] = ""
+    if body.days_of_week is not None and "days_of_week" not in fields:
         fields["days_of_week"] = body.days_of_week
     if body.time_of_day is not None:
         fields["time_of_day"] = body.time_of_day

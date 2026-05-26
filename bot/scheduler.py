@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Optional, Set
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.date import DateTrigger
 from telegram import Bot
 from telegram.ext import Application, ContextTypes
 
@@ -212,6 +213,48 @@ async def _send_qr_photo_to_all(bot: Bot, payload: str = "payment_qr.png", targe
             logger.error(f"Failed to send QR reminder to {chat_id}: {e}")
 
 
+def _image_send_arg(image: str):
+    """Resolve a schedule's image value to something Bot.send_photo accepts.
+
+    If it names a file in assets/ → return that Path (open and upload).
+    Otherwise treat it as a Telegram file_id (from a Mini App upload) and
+    return the string as-is. Returns None when there's no image."""
+    image = (image or "").strip()
+    if not image:
+        return None
+    p = Path(__file__).parent.parent / "assets" / image
+    return p if p.exists() else image
+
+
+async def _send_scheduled(
+    bot: Bot, text: str = "", image: str = "", target_chat_ids: str = "ALL"
+) -> None:
+    """Unified scheduled send: a photo (with text as caption) when an image is
+    set, otherwise a text message. Used by all new schedules."""
+    chat_ids = await _resolve_targets(target_chat_ids)
+    if not chat_ids:
+        logger.warning("Scheduled send: no target chats.")
+        return
+    img = _image_send_arg(image)
+    caption = text or None
+    for chat_id in chat_ids:
+        try:
+            if img is not None:
+                if isinstance(img, Path):
+                    with open(img, "rb") as photo:
+                        await bot.send_photo(chat_id=chat_id, photo=photo, caption=caption)
+                else:
+                    await bot.send_photo(chat_id=chat_id, photo=img, caption=caption)
+            else:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=text or await settings.get("DAILY_MESSAGE", DAILY_MESSAGE),
+                )
+            logger.info(f"Scheduled message sent to {chat_id}")
+        except Exception as e:
+            logger.error(f"Scheduled send to {chat_id} failed: {e}")
+
+
 async def send_scheduled_message(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Manually trigger reminder text (used by debug command)."""
     await _send_text_reminder_to_all(context.bot)
@@ -302,34 +345,80 @@ async def _register_jobs_from_sheets(
         lambda r: str(r.get("is_active", "")).upper() == "TRUE",
     )
     registered = 0
+    tz = getattr(scheduler, "timezone", None)
+    now = datetime.datetime.now(tz)
     for row in rows:
         schedule_id = row.get("schedule_id") or ""
         action_type = str(row.get("action_type", "")).upper()
-        action = _ACTION_DISPATCH.get(action_type)
-        if not action:
-            logger.warning(f"Schedule '{schedule_id}': unknown action_type '{action_type}', skipping")
+        hour, minute = _parse_hhmm(str(row.get("time_of_day", "")), "08:00")
+        targets = str(row.get("target_chat_ids", "ALL"))
+        run_date = str(row.get("run_date", "")).strip()
+
+        # New model: message_text + image columns. Fall back to legacy
+        # action_type/payload so old rows keep working unchanged.
+        message_text = str(row.get("message_text", "") or "")
+        image = str(row.get("image", "") or "")
+        payload = str(row.get("payload", "") or "")
+        has_new = bool(message_text or image or run_date)
+
+        if not has_new:
+            # Pure legacy row → dispatch on action_type as before (preserves
+            # e.g. the Vongsa QR caption in _send_qr_photo_to_all).
+            action = _ACTION_DISPATCH.get(action_type)
+            if not action:
+                logger.warning(f"Schedule '{schedule_id}': unknown action_type '{action_type}', skipping")
+                continue
+            days = _normalise_days(str(row.get("days_of_week", "")))
+            scheduler.add_job(
+                action, trigger="cron", day_of_week=days, hour=hour, minute=minute,
+                id=f"sheet_{schedule_id}", args=[application.bot, payload, targets],
+                replace_existing=True,
+            )
+            registered += 1
+            logger.info(
+                f"Registered schedule '{schedule_id}': {action_type} @ "
+                f"{hour:02d}:{minute:02d} {days} -> {targets}"
+            )
             continue
 
-        days = _normalise_days(str(row.get("days_of_week", "")))
-        hour, minute = _parse_hhmm(str(row.get("time_of_day", "")), "08:00")
-        payload = str(row.get("payload", ""))
-        targets = str(row.get("target_chat_ids", "ALL"))
+        # New model: normalise text/image (also accept legacy payload).
+        text = message_text or (payload if action_type == "TEXT" else "")
+        img = image or (payload if action_type == "QR_PHOTO" else "")
+        kwargs = {"text": text, "image": img, "target_chat_ids": targets}
 
-        scheduler.add_job(
-            action,
-            trigger="cron",
-            day_of_week=days,
-            hour=hour,
-            minute=minute,
-            id=f"sheet_{schedule_id}",
-            args=[application.bot, payload, targets],
-            replace_existing=True,
-        )
-        registered += 1
-        logger.info(
-            f"Registered schedule '{schedule_id}': {action_type} @ "
-            f"{hour:02d}:{minute:02d} {days} -> {targets}"
-        )
+        if run_date:
+            # One-time schedule on a specific date.
+            try:
+                y, m, d = (int(x) for x in run_date.split("-"))
+                when = datetime.datetime(y, m, d, hour, minute, tzinfo=tz)
+            except (ValueError, TypeError):
+                logger.warning(f"Schedule '{schedule_id}': bad run_date '{run_date}', skipping")
+                continue
+            if when <= now:
+                logger.info(
+                    f"Schedule '{schedule_id}': run_date {run_date} {hour:02d}:{minute:02d} "
+                    f"is in the past — not registered."
+                )
+                continue
+            scheduler.add_job(
+                _send_scheduled, trigger=DateTrigger(run_date=when),
+                id=f"sheet_{schedule_id}", args=[application.bot], kwargs=kwargs,
+                replace_existing=True,
+            )
+            registered += 1
+            logger.info(f"Registered one-time schedule '{schedule_id}' @ {when.isoformat()} -> {targets}")
+        else:
+            days = _normalise_days(str(row.get("days_of_week", "")))
+            scheduler.add_job(
+                _send_scheduled, trigger="cron", day_of_week=days, hour=hour, minute=minute,
+                id=f"sheet_{schedule_id}", args=[application.bot], kwargs=kwargs,
+                replace_existing=True,
+            )
+            registered += 1
+            logger.info(
+                f"Registered schedule '{schedule_id}': "
+                f"{'IMG' if img else 'TEXT'} @ {hour:02d}:{minute:02d} {days} -> {targets}"
+            )
     return registered
 
 
