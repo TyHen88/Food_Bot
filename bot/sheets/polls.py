@@ -74,7 +74,11 @@ async def create(
         "created_by": created_by or "",
     }
     if is_configured():
-        await repo.create("poll", row)
+        # Blocking write: the poll row must survive a restart, otherwise the
+        # Order button can't find the poll and votes can't be aggregated.
+        # upsert_blocking appends a fresh poll_id just like create(), but
+        # awaits the Sheets write instead of firing it in the background.
+        await repo.upsert_blocking("poll", row)
     else:
         _mem_polls[poll_id] = row
 

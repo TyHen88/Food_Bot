@@ -44,9 +44,15 @@ async def record(
     user_name: str,
     selected_options: List[str],
 ) -> None:
-    """Upsert the user's selection for this poll."""
+    """Upsert the user's selection for this poll.
+
+    Uses a *blocking* write so the vote reaches the `vote` tab before we
+    return. Votes are the source of truth for the Order summary; a
+    fire-and-forget write can be lost if the process restarts before the
+    background flush, which surfaced as "No orders yet" after a redeploy.
+    """
     if is_configured():
-        await repo.upsert("vote", {
+        await repo.upsert_blocking("vote", {
             "vote_id": _vote_id(poll_id, user_id),
             "poll_id": poll_id,
             "user_id": user_id,
