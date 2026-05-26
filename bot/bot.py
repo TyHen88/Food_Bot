@@ -9,7 +9,12 @@ is empty).
 
 import logging
 
-from telegram import BotCommand
+from telegram import (
+    BotCommand,
+    BotCommandScopeAllGroupChats,
+    BotCommandScopeAllPrivateChats,
+    BotCommandScopeDefault,
+)
 from telegram.ext import Application
 
 from .config import BOT_TOKEN, setup_logging
@@ -38,7 +43,22 @@ BOT_COMMANDS = [
 
 async def _post_init(app: Application) -> None:
     """Runs after PTB is initialised but before updates start flowing."""
-    await app.bot.set_my_commands(BOT_COMMANDS)
+    # Telegram resolves the most specific command scope first, so a stale
+    # per-scope list (e.g. one set before /app existed) shadows the default
+    # everywhere it applies. Clear the narrower scopes so the default list
+    # below — which includes /app — is what users actually see. Then set the
+    # default, and also set it explicitly on the two broad scopes so the menu
+    # is correct regardless of what was there before.
+    for scope in (BotCommandScopeAllPrivateChats(), BotCommandScopeAllGroupChats()):
+        try:
+            await app.bot.delete_my_commands(scope=scope)
+        except Exception as e:
+            logger.warning(f"delete_my_commands({scope.type}) failed: {e}")
+
+    await app.bot.set_my_commands(BOT_COMMANDS, scope=BotCommandScopeDefault())
+    cmds = ", ".join("/" + c.command for c in BOT_COMMANDS)
+    logger.info(f"Registered {len(BOT_COMMANDS)} bot commands (default scope): {cmds}")
+
     await setup_scheduler(app)
     logger.info("Bot commands and scheduler registered")
 
