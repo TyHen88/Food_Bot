@@ -46,6 +46,7 @@ from .scheduler import (
     send_scheduled_message,
     send_vongsa_qr_now,
 )
+from .sheets import chat_settings as sheets_chat_settings
 from .sheets import events as sheets_events
 from .sheets import orders as sheets_orders
 from .sheets import payers as sheets_payers
@@ -285,7 +286,10 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
         user_selections_data = await get_user_selections(poll_id)
         order_name = await sheets_settings.get("ORDER_NAME", ORDER_NAME)
-        style = await sheets_settings.get("ORDER_SUMMARY_STYLE", "1")
+        # Per-chat order-summary template, falling back to the global style.
+        style = await sheets_chat_settings.get(
+            poll_data.get("chat_id"), "ORDER_SUMMARY_STYLE", "1",
+        )
         order_summary = format_order_summary(
             order_items, order_name, user_selections_data, style=style,
         )

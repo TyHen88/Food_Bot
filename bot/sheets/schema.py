@@ -15,7 +15,7 @@ Conventions (see PLAN.md "Sheets design rules"):
 
 from typing import Dict, List
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # Tab name → ordered list of column headers.
 # Order matters: first column is the PK; bootstrap.py writes headers in this order.
@@ -27,6 +27,12 @@ TABS: Dict[str, List[str]] = {
     "setting": [
         "key", "value", "value_type", "description",
         "updated_at", "updated_by",
+    ],
+    "chat_setting": [
+        # Per-chat overrides of `setting` keys (e.g. ORDER_SUMMARY_STYLE so each
+        # group picks its own order-summary template). PK `id` = "<chat_id>:<key>".
+        # Reads fall back to the global `setting` value when no row exists.
+        "id", "chat_id", "key", "value", "updated_at", "updated_by",
     ],
     "user": [
         # chat_id records the most recent chat the user interacted in, so

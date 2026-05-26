@@ -512,13 +512,34 @@
     }[c]));
   }
 
+  // Reverse handlers.encode_chat_param: "g<digits>" -> "-<digits>",
+  // "c<digits>" -> "<digits>"; plain numeric passes through.
+  function decodeChatParam(p) {
+    if (!p) return "";
+    const s = String(p);
+    if (s[0] === "g") return "-" + s.slice(1);
+    if (s[0] === "c") return s.slice(1);
+    return s;
+  }
+  // The chat this app was launched from (group via ?startapp, attachment-menu
+  // via chat). "" when opened from the bot DM.
+  function launchChatId() {
+    const tg = window.Telegram && window.Telegram.WebApp;
+    const u = tg && tg.initDataUnsafe;
+    if (u && u.chat && u.chat.id != null) return String(u.chat.id);
+    if (u && u.start_param) return decodeChatParam(u.start_param);
+    return "";
+  }
+
   async function refresh() {
     const list = document.getElementById("list");
     list.textContent = "";
 
     let rows;
     try {
-      rows = await window.FoodBot.api("/schedules");
+      const cid = launchChatId();
+      const path = cid ? `/schedules?chat_id=${encodeURIComponent(cid)}` : "/schedules";
+      rows = await window.FoodBot.api(path);
     } catch (err) {
       const e = document.createElement("div");
       e.className = "empty";
@@ -619,6 +640,10 @@
     document.getElementById("f-targets").value = row ? (row.target_chat_ids || "ALL") : "ALL";
     renderDayPicker(row ? row.days_of_week : "MON,TUE,WED,THU,FRI");
     syncPayloadLabel();
+    // When opened from a group, schedules are auto-scoped to it: hide the
+    // free-text "Target chats" field (saveForm sets it to the launch chat).
+    const targetsField = document.getElementById("f-targets").closest(".field");
+    if (targetsField) targetsField.style.display = launchChatId() ? "none" : "";
     document.getElementById("formDelete").style.display = row ? "block" : "none";
     document.getElementById("formOverlay").classList.add("open");
   }
@@ -635,8 +660,16 @@
       payload: document.getElementById("f-payload").value,
       days_of_week: days,
       time_of_day: time,
-      target_chat_ids: document.getElementById("f-targets").value.trim() || "ALL",
     };
+    const cid = launchChatId();
+    if (cid) {
+      // Auto-scope to the group the app was launched from — both new and
+      // edited schedules belong to this group (so an "ALL" one edited here
+      // becomes group-specific). Manage broadcast/ALL schedules from the DM.
+      body.target_chat_ids = cid;
+    } else {
+      body.target_chat_ids = document.getElementById("f-targets").value.trim() || "ALL";
+    }
     const saveBtn = document.getElementById("formSave");
     saveBtn.disabled = true;
     try {

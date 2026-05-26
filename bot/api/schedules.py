@@ -9,12 +9,21 @@ admin-only. Every mutation rebuilds the APScheduler jobs via
 import re
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, field_validator
 
 from ..sheets import events, repo
 from ..sheets.client import is_configured
 from .auth import require_admin, require_member
+
+
+def _targets_chat(row: Dict[str, Any], chat_id: str) -> bool:
+    """True if a schedule row fires for `chat_id` — i.e. its target_chat_ids
+    is "ALL"/empty (broadcast) or lists this chat id."""
+    raw = str(row.get("target_chat_ids", "ALL")).strip()
+    if not raw or raw.upper() == "ALL":
+        return True
+    return chat_id in [p.strip() for p in raw.split(",")]
 
 router = APIRouter(prefix="/schedules", tags=["schedules"])
 
@@ -83,11 +92,18 @@ def _require_configured() -> None:
 
 
 @router.get("")
-async def list_schedules(_: dict = Depends(require_member)) -> List[Dict[str, Any]]:
+async def list_schedules(
+    chat_id: Optional[str] = Query(None, description="Restrict to schedules that fire for this chat."),
+    _: dict = Depends(require_member),
+) -> List[Dict[str, Any]]:
     # Read access for any verified user; mutation stays admin-only.
     if not is_configured():
         return []
-    return await repo.list_all("schedule")
+    rows = await repo.list_all("schedule")
+    if chat_id:
+        wanted = str(chat_id).strip()
+        rows = [r for r in rows if _targets_chat(r, wanted)]
+    return rows
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
