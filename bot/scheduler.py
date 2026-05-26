@@ -151,12 +151,33 @@ async def get_scheduled_chats() -> Set[int]:
 # Scheduled actions
 # ---------------------------------------------------------------------------
 
-async def _send_text_reminder_to_all(bot: Bot, payload: str = "") -> None:
+async def _resolve_targets(target_chat_ids: str = "ALL") -> list[int]:
+    """Resolve a schedule's target_chat_ids field to concrete chat ids.
+
+    "ALL" (or empty) → every subscribed chat. Otherwise a comma-separated
+    list of chat ids is used verbatim, so a schedule can be aimed at specific
+    chats from the Mini App's "Target chats" field."""
+    raw = (target_chat_ids or "ALL").strip()
+    if not raw or raw.upper() == "ALL":
+        return await _get_subscribed_chat_ids()
+    out: list[int] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(int(part))
+        except ValueError:
+            logger.warning(f"Schedule target_chat_ids: ignoring non-numeric '{part}'")
+    return out
+
+
+async def _send_text_reminder_to_all(bot: Bot, payload: str = "", target_chat_ids: str = "ALL") -> None:
     text = payload or await settings.get("DAILY_MESSAGE", DAILY_MESSAGE)
-    chat_ids = await _get_subscribed_chat_ids()
+    chat_ids = await _resolve_targets(target_chat_ids)
     logger.info(f"Sending text reminder to {len(chat_ids)} chat(s) at {datetime.datetime.now()}")
     if not chat_ids:
-        logger.warning("No subscribed chats — /start or /subscribe needed first.")
+        logger.warning("No target chats — /start or /subscribe needed first.")
         return
     for chat_id in chat_ids:
         try:
@@ -166,12 +187,12 @@ async def _send_text_reminder_to_all(bot: Bot, payload: str = "") -> None:
             logger.error(f"Failed to send reminder to {chat_id}: {e}")
 
 
-async def _send_qr_photo_to_all(bot: Bot, payload: str = "payment_qr.png") -> None:
+async def _send_qr_photo_to_all(bot: Bot, payload: str = "payment_qr.png", target_chat_ids: str = "ALL") -> None:
     qr_path = Path(__file__).parent.parent / "assets" / (payload or "payment_qr.png")
-    chat_ids = await _get_subscribed_chat_ids()
+    chat_ids = await _resolve_targets(target_chat_ids)
     logger.info(f"Sending QR reminder to {len(chat_ids)} chat(s) at {datetime.datetime.now()}")
     if not chat_ids:
-        logger.warning("No subscribed chats for QR reminder.")
+        logger.warning("No target chats for QR reminder.")
         return
 
     for chat_id in chat_ids:
@@ -292,6 +313,7 @@ async def _register_jobs_from_sheets(
         days = _normalise_days(str(row.get("days_of_week", "")))
         hour, minute = _parse_hhmm(str(row.get("time_of_day", "")), "08:00")
         payload = str(row.get("payload", ""))
+        targets = str(row.get("target_chat_ids", "ALL"))
 
         scheduler.add_job(
             action,
@@ -300,11 +322,14 @@ async def _register_jobs_from_sheets(
             hour=hour,
             minute=minute,
             id=f"sheet_{schedule_id}",
-            args=[application.bot, payload],
+            args=[application.bot, payload, targets],
             replace_existing=True,
         )
         registered += 1
-        logger.info(f"Registered schedule '{schedule_id}': {action_type} @ {hour:02d}:{minute:02d} {days}")
+        logger.info(
+            f"Registered schedule '{schedule_id}': {action_type} @ "
+            f"{hour:02d}:{minute:02d} {days} -> {targets}"
+        )
     return registered
 
 
