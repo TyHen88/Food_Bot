@@ -33,7 +33,8 @@ BOT_COMMANDS = [
     BotCommand("vongsa", "Pay Vongsa Hourt (KHQR)"),
     BotCommand("ty", "Pay Ty Hen (KHQR)"),
     # Admin-only (decorator rejects non-admins)
-    BotCommand("admin", "Open the Mini App admin panel"),
+    # NOTE: /admin is intentionally NOT listed here — it still works if typed
+    # (handler stays registered), but it's hidden from the command menu.
     BotCommand("set", "Update a setting key"),
     BotCommand("schedule_list", "List configured schedules"),
     BotCommand("schedule_enable", "Enable a schedule"),
