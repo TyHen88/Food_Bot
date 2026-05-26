@@ -118,6 +118,16 @@ async def _record_user_if_new(tg_user, chat_id=None) -> None:
         logger.warning(f"_record_user_if_new failed for user {tg_user.id}: {e}")
 
 
+def encode_chat_param(chat_id) -> str:
+    """Encode a chat id for Telegram's `startapp` parameter without a leading
+    "-". startapp only allows [A-Za-z0-9_-] and a leading "-" is unreliable
+    across clients, so we use a sign prefix: "g" for negative ids (groups /
+    supergroups) and "c" for non-negative ids. The frontend reverses this in
+    launchChatId(). Example: -1002308775160 -> "g1002308775160"."""
+    n = int(chat_id)
+    return f"g{-n}" if n < 0 else f"c{n}"
+
+
 def _calendar_keyboard(chat, bot_username: str | None = None):
     """One-button "View Calendar" markup that opens the Mini App.
 
@@ -139,10 +149,9 @@ def _calendar_keyboard(chat, bot_username: str | None = None):
 
     # Group / supergroup → inline direct-link button. Pass the chat id through
     # the startapp parameter so the Mini App can scope the calendar/members to
-    # this chat (Telegram exposes it as initDataUnsafe.start_param). chat ids
-    # are -?\d+, which fits startapp's [A-Za-z0-9_-] charset.
+    # this chat (Telegram exposes it as initDataUnsafe.start_param).
     if bot_username:
-        link = f"https://t.me/{bot_username}?startapp={chat.id}"
+        link = f"https://t.me/{bot_username}?startapp={encode_chat_param(chat.id)}"
     else:
         link = f"{WEBHOOK_URL}/"
     return InlineKeyboardMarkup([[
@@ -622,8 +631,14 @@ async def handle_app_command(
         else:
             # Group/supergroup: web_app buttons are private-only → link to the
             # direct-link Mini App instead (needs Main Mini App set in BotFather).
+            # Pass the chat id via startapp so the Mini App scopes to this chat.
             username = context.bot.username
-            link = f"https://t.me/{username}?startapp" if username else f"{base_url}/"
+            if username and chat:
+                link = f"https://t.me/{username}?startapp={encode_chat_param(chat.id)}"
+            elif username:
+                link = f"https://t.me/{username}?startapp"
+            else:
+                link = f"{base_url}/"
             keyboard = InlineKeyboardMarkup([[
                 InlineKeyboardButton("🍱 Open Food Bot", url=link),
             ]])

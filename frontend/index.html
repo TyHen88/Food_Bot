@@ -921,15 +921,24 @@
   // When the Mini App is launched from a group chat, Telegram includes that
   // chat in init-data. We scope the calendar to it so each chat shows its
   // own orders. Absent (e.g. launched from the bot DM) → no chat filter.
+  // Reverse handlers.encode_chat_param: "g<digits>" -> "-<digits>" (groups),
+  // "c<digits>" -> "<digits>". Plain numeric strings pass through unchanged.
+  function decodeChatParam(p) {
+    if (!p) return "";
+    const s = String(p);
+    if (s[0] === "g") return "-" + s.slice(1);
+    if (s[0] === "c") return s.slice(1);
+    return s;
+  }
   function launchChatId() {
     const tg = window.Telegram && window.Telegram.WebApp;
     const u = tg && tg.initDataUnsafe;
-    // Attachment-menu launches include `chat`; direct-link (?startapp=<chat_id>)
-    // launches from a group carry it in start_param instead. If neither is
-    // present (opened from the bot DM), return "" and let the server scope to
-    // the caller's most recent chat.
+    // Attachment-menu launches include `chat`; direct-link (?startapp=...)
+    // launches from a group carry the chat id in start_param instead. If
+    // neither is present (opened from the bot DM), return "" and let the
+    // server scope to the chats the caller takes part in.
     if (u && u.chat && u.chat.id != null) return String(u.chat.id);
-    if (u && u.start_param) return String(u.start_param);
+    if (u && u.start_param) return decodeChatParam(u.start_param);
     return "";
   }
 
