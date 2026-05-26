@@ -21,7 +21,8 @@ from fastapi import APIRouter, Depends, Query
 from ..sheets import orders as sheets_orders
 from ..sheets import repo
 from ..sheets.client import is_configured
-from .auth import caller_chat_id, require_member
+from .auth import caller_user_id, require_member
+from .members import user_chats
 
 router = APIRouter(prefix="/orders", tags=["orders"])
 
@@ -141,21 +142,21 @@ async def list_orders(
 ) -> List[Dict[str, Any]]:
     """Orders in a date range, annotated for the calendar. Role-aware.
 
-    When `chat_id` is given (the Mini App passes the chat it was launched
-    from), only that chat's orders are returned. If it's absent (e.g. opened
-    from the bot DM), we fall back to the caller's most recent chat so the
-    calendar stays scoped to their group.
+    When `chat_id` is given (the Mini App launched from a group passes it via
+    ?startapp=<chat_id>), only that chat's orders are returned. If it's absent
+    (e.g. opened from the bot DM), we scope to every chat the caller takes
+    part in — never other groups' orders.
     """
     if date and not (date_from or date_to):
         date_from = date_to = date
-
-    if not chat_id:
-        chat_id = await caller_chat_id(auth)
 
     rows = await sheets_orders.list_in_range(date_from, date_to)
     if chat_id:
         wanted = str(chat_id).strip()
         rows = [r for r in rows if str(r.get("chat_id", "")).strip() == wanted]
+    else:
+        my_chats = await user_chats(caller_user_id(auth))
+        rows = [r for r in rows if str(r.get("chat_id", "")).strip() in my_chats]
     if not rows:
         return []
 
