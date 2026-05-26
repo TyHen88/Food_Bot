@@ -25,7 +25,10 @@ async def with_retry(func, *args, max_retries: int = 3, **kwargs):
             await asyncio.sleep(2**attempt)
 
 # Khmer digits ១-៦ plus Arabic 1-6
-_NUMERAL_PATTERN = re.compile(r"^[\u17e1\u17e2\u17e3\u17e4\u17e5\u17e61-6]\.?\s*")
+# The (?!\)) lookahead rejects a digit immediately followed by ")", so the
+# bot's own order summary \u2014 which lists items as "1) item x 1" \u2014 isn't
+# mistaken for a menu when a user re-sends it. Real menus use "1. x" / "1 x".
+_NUMERAL_PATTERN = re.compile(r"^[\u17e1\u17e2\u17e3\u17e4\u17e5\u17e61-6](?!\))\.?\s*")
 
 def extract_menu_options(text: str) -> List[str]:
     """Extract menu options from text.
