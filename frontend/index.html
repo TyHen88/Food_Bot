@@ -516,7 +516,7 @@
   .cal-spinner {
     width: 32px; height: 32px; border-radius: 50%;
     border: 3px solid var(--border);
-    border-top-color: var(--accent);
+    border-top-color: var(--blue);
     animation: cal-spin .7s linear infinite;
   }
   @keyframes cal-spin { to { transform: rotate(360deg); } }
@@ -1040,23 +1040,9 @@
     }
   }
 
-  // ── Theme toggle ───────────────────────────────────────────
-  function currentTheme() {
-    return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
-  }
-  function applyTheme(theme) {
-    document.documentElement.dataset.theme = theme;
-    try { localStorage.setItem("fb_theme", theme); } catch (e) { /* ignore */ }
-    const btn = document.getElementById("themeToggle");
-    // Show the icon for the mode you'd switch TO.
-    if (btn) btn.textContent = theme === "dark" ? "☀" : "☾";
-  }
-
   window.pageInit = async function () {
-    applyTheme(currentTheme());  // sync the toggle icon to the seeded theme
-    document.getElementById("themeToggle").addEventListener("click", () => {
-      applyTheme(currentTheme() === "dark" ? "light" : "dark");
-    });
+    // The theme toggle (#themeToggle, beside the ‹ button) is wired by app.js,
+    // shared across all tabs.
     document.getElementById("prevWeek").addEventListener("click", async () => {
       weekStart = addDays(weekStart, -7);
       await refresh();

@@ -6,6 +6,18 @@
 <title>Templates — Food Bot</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<script>
+  // Apply the shared theme before first paint so dark mode never flashes.
+  (function () {
+    try {
+      var t = localStorage.getItem("fb_theme");
+      if (t !== "dark" && t !== "light") {
+        t = (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+      }
+      document.documentElement.dataset.theme = t;
+    } catch (e) { document.documentElement.dataset.theme = "light"; }
+  })();
+</script>
 <style>
   :root {
     --bg: #F7F5F0;
@@ -217,24 +229,22 @@
   .toast.error { background: #B83A3A; }
 
   /* Dark mode */
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #161412;
-      --surface: #1E1B17;
-      --surface2: #2A261F;
-      --border: #332F27;
-      --text: #F2EDE4;
-      --text-muted: #8A8070;
-      --accent: #58D69E;
-      --accent-light: rgba(45, 106, 79, 0.22);
-      --orange-light: rgba(224, 123, 57, 0.18);
-      --gray-light: rgba(255, 255, 255, 0.08);
-      --today: #F2EDE4;
-    }
-    html { background: #0F0D0B; }
-    .style-preview { background: #161311; }
-    .style-card.selected .style-preview { background: var(--surface); }
+  :root[data-theme="dark"] {
+    --bg: #161412;
+    --surface: #1E1B17;
+    --surface2: #2A261F;
+    --border: #332F27;
+    --text: #F2EDE4;
+    --text-muted: #8A8070;
+    --accent: #58D69E;
+    --accent-light: rgba(45, 106, 79, 0.22);
+    --orange-light: rgba(224, 123, 57, 0.18);
+    --gray-light: rgba(255, 255, 255, 0.08);
+    --today: #F2EDE4;
   }
+  html[data-theme="dark"] { background: #0F0D0B; }
+  [data-theme="dark"] .style-preview { background: #161311; }
+  [data-theme="dark"] .style-card.selected .style-preview { background: var(--surface); }
 </style>
 </head>
 <body>

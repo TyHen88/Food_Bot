@@ -29,6 +29,21 @@
     } catch (_) { /* localStorage unavailable — fall back to the loading gate */ }
   })();
 
+  // Seed the theme as early as possible (a defensive backstop — pages also seed
+  // in their <head> to avoid any flash). data-theme drives every page's dark
+  // styles so the header toggle below applies app-wide via shared localStorage.
+  (function seedTheme() {
+    try {
+      if (!document.documentElement.dataset.theme) {
+        let t = localStorage.getItem("fb_theme");
+        if (t !== "dark" && t !== "light") {
+          t = (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+        }
+        document.documentElement.dataset.theme = t;
+      }
+    } catch (_) { /* localStorage unavailable */ }
+  })();
+
   // Full-screen loading overlay shown on every page until its data finishes
   // fetching. Injected here (shared) so all tabs get it without per-page markup;
   // runPageInit() hides it once loadAuth + the page's pageInit resolve.
@@ -42,7 +57,7 @@
       "transition:opacity .25s ease}" +
       ".fb-loading.hide{opacity:0;pointer-events:none}" +
       ".fb-spinner{width:34px;height:34px;border-radius:50%;" +
-      "border:3px solid var(--border,rgba(0,0,0,.12));border-top-color:var(--accent,#2D6A4F);" +
+      "border:3px solid var(--border,rgba(0,0,0,.12));border-top-color:var(--blue,#3A6EA8);" +
       "animation:fb-spin .7s linear infinite}" +
       "@keyframes fb-spin{to{transform:rotate(360deg)}}" +
       // Slim top progress bar shown whenever an /api request is in flight.
@@ -51,8 +66,14 @@
       "z-index:10000;opacity:0;transition:opacity .3s ease;pointer-events:none}" +
       ".fb-bar.active{opacity:1}" +
       ".fb-bar::before{content:'';position:absolute;top:0;height:100%;width:40%;" +
-      "background:var(--accent,#2D6A4F);animation:fb-slide 1.1s infinite ease-in-out}" +
-      "@keyframes fb-slide{0%{left:-40%}100%{left:100%}}";
+      "background:var(--blue,#3A6EA8);animation:fb-slide 1.1s infinite ease-in-out}" +
+      "@keyframes fb-slide{0%{left:-40%}100%{left:100%}}" +
+      // Theme toggle injected into headers that don't already have one.
+      ".fb-theme-toggle{position:absolute;top:max(env(safe-area-inset-top,8px),8px);" +
+      "right:14px;width:32px;height:32px;border-radius:8px;border:1px solid var(--border);" +
+      "background:var(--surface);color:var(--text);font-size:15px;line-height:1;cursor:pointer;" +
+      "display:flex;align-items:center;justify-content:center;z-index:101}" +
+      ".fb-theme-toggle:active{transform:scale(.93)}";
     document.head.appendChild(style);
 
     const mount = () => {
@@ -201,9 +222,46 @@
   }
   window.FoodBot.applyRoleVisibility = applyRoleVisibility;
 
+  // ── Theme (shared across all tabs via localStorage + data-theme) ──────────
+  function currentTheme() {
+    return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+  }
+  function applyTheme(theme) {
+    document.documentElement.dataset.theme = theme;
+    try { localStorage.setItem("fb_theme", theme); } catch (_) { /* ignore */ }
+    // Show the icon for the mode you'd switch TO, on every toggle on the page.
+    document.querySelectorAll("#themeToggle, .fb-theme-toggle").forEach((btn) => {
+      btn.textContent = theme === "dark" ? "☀" : "☾";
+    });
+  }
+  window.FoodBot.applyTheme = applyTheme;
+  window.FoodBot.currentTheme = currentTheme;
+
+  // Wire existing toggles and inject one into any header lacking it, so the
+  // dark/light switch is reachable from every tab, not just the calendar.
+  function setupTheme() {
+    if (!document.getElementById("themeToggle")) {
+      const header = document.querySelector(".header");
+      if (header) {
+        const btn = document.createElement("button");
+        btn.id = "themeToggle";
+        btn.className = "fb-theme-toggle";
+        btn.setAttribute("aria-label", "Toggle dark mode");
+        header.appendChild(btn);
+      }
+    }
+    applyTheme(currentTheme());  // sync every toggle's icon to the active theme
+    document.querySelectorAll("#themeToggle, .fb-theme-toggle").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        applyTheme(currentTheme() === "dark" ? "light" : "dark");
+      });
+    });
+  }
+
   // Each page defines a `window.pageInit` AFTER this script tag.
   // Wait for the rest of the body to parse, fetch auth, then call it.
   async function runPageInit() {
+    setupTheme();
     try {
       await loadAuth();
       if (typeof window.pageInit === "function") {
