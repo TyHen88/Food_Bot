@@ -6,6 +6,21 @@
 <title>Food Bot — Calendar</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<script>
+  // Apply the saved theme (or fall back to the OS preference) before first
+  // paint so dark mode never flashes. The header toggle persists fb_theme.
+  (function () {
+    try {
+      var t = localStorage.getItem("fb_theme");
+      if (t !== "dark" && t !== "light") {
+        t = (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+      }
+      document.documentElement.dataset.theme = t;
+    } catch (e) {
+      document.documentElement.dataset.theme = "light";
+    }
+  })();
+</script>
 <style>
   :root {
     --bg: #F7F5F0;
@@ -292,9 +307,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  @media (prefers-color-scheme: dark) {
-    .event-chat { background: rgba(255,255,255,0.10); }
-  }
+  [data-theme="dark"] .event-chat { background: rgba(255,255,255,0.10); }
 
   /* Color themes */
   .ev-green  { background: var(--accent-light); border-left: 3px solid var(--accent); color: #1B5E3B; }
@@ -457,35 +470,56 @@
   }
 
   /* Dark theme — mirrors the prototype's toggleDark() palette */
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #161412;
-      --surface: #1E1B17;
-      --surface2: #2A261F;
-      --border: #332F27;
-      --text: #F2EDE4;
-      --text-muted: #8A8070;
-      --accent: #58D69E;
-      --accent-light: rgba(45, 106, 79, 0.22);
-      --orange-light: rgba(224, 123, 57, 0.18);
-      --blue-light: rgba(58, 110, 168, 0.20);
-      --pink-light: rgba(194, 86, 106, 0.20);
-      --yellow-light: rgba(196, 155, 48, 0.18);
-      --gray-light: rgba(255, 255, 255, 0.08);
-      --today: #F2EDE4;
-    }
-    html { background: #0F0D0B; }
-    .ev-green  { color: #A7E5C3; }
-    .ev-orange { color: #F5BC8C; }
-    .ev-blue   { color: #9BBDE0; }
-    .ev-pink   { color: #E8A8B6; }
-    .ev-gray   { color: #C9C3B5; }
-    .ev-yellow { color: #DDC07A; }
-    .day-col { background: #1A1714; }
-    .day-col.today-col { background: #221E18; }
-    .week-date-cell.today-date .week-date-num { color: #1A1714; }
-    .btn-primary { color: #1A1714; }
+  /* Dark theme — applied via [data-theme="dark"] on <html> so the header
+     toggle can switch it manually (the inline head script seeds it from the
+     saved choice or the OS preference). */
+  :root[data-theme="dark"] {
+    --bg: #161412;
+    --surface: #1E1B17;
+    --surface2: #2A261F;
+    --border: #332F27;
+    --text: #F2EDE4;
+    --text-muted: #8A8070;
+    --accent: #58D69E;
+    --accent-light: rgba(45, 106, 79, 0.22);
+    --orange-light: rgba(224, 123, 57, 0.18);
+    --blue-light: rgba(58, 110, 168, 0.20);
+    --pink-light: rgba(194, 86, 106, 0.20);
+    --yellow-light: rgba(196, 155, 48, 0.18);
+    --gray-light: rgba(255, 255, 255, 0.08);
+    --today: #F2EDE4;
   }
+  html[data-theme="dark"] { background: #0F0D0B; }
+  [data-theme="dark"] .ev-green  { color: #A7E5C3; }
+  [data-theme="dark"] .ev-orange { color: #F5BC8C; }
+  [data-theme="dark"] .ev-blue   { color: #9BBDE0; }
+  [data-theme="dark"] .ev-pink   { color: #E8A8B6; }
+  [data-theme="dark"] .ev-gray   { color: #C9C3B5; }
+  [data-theme="dark"] .ev-yellow { color: #DDC07A; }
+  [data-theme="dark"] .day-col { background: #1A1714; }
+  [data-theme="dark"] .day-col.today-col { background: #221E18; }
+  [data-theme="dark"] .week-date-cell.today-date .week-date-num { color: #1A1714; }
+  [data-theme="dark"] .btn-primary { color: #1A1714; }
+
+  /* Calendar loading overlay — covers the grid while polls load. */
+  .cal-loading {
+    position: fixed;
+    left: 50%; transform: translateX(-50%);
+    width: 100%; max-width: var(--frame-w);
+    top: 0; bottom: 0;
+    background: var(--bg);
+    display: none;
+    align-items: center; justify-content: center;
+    z-index: 95;
+  }
+  .cal-loading.show { display: flex; }
+  .cal-spinner {
+    width: 32px; height: 32px; border-radius: 50%;
+    border: 3px solid var(--border);
+    border-top-color: var(--accent);
+    animation: cal-spin .7s linear infinite;
+  }
+  @keyframes cal-spin { to { transform: rotate(360deg); } }
 </style>
 </head>
 <body>
@@ -498,6 +532,7 @@
       <span id="monthYear"></span>
     </div>
     <div class="header-actions">
+      <button class="btn-icon" id="themeToggle" aria-label="Toggle dark mode"></button>
       <button class="btn-icon" id="prevWeek" aria-label="Previous week">‹</button>
       <button class="btn-today" id="todayBtn">Today</button>
       <button class="btn-icon" id="nextWeek" aria-label="Next week">›</button>
@@ -505,6 +540,9 @@
   </div>
   <div class="week-dates-row" id="weekDatesRow"></div>
 </div>
+
+<!-- Loading overlay shown while the week's polls fetch -->
+<div class="cal-loading" id="calLoading"><div class="cal-spinner"></div></div>
 
 <!-- ── CALENDAR SCROLL ── -->
 <div class="calendar-scroll" id="calScroll">
@@ -990,13 +1028,35 @@
 
   // ─── Boot ───────────────────────────────────────────────────
   async function refresh() {
-    renderHeader();
-    currentPolls = await loadPolls();
-    renderGrid(currentPolls);
-    scrollToFirst(currentPolls);
+    const load = document.getElementById("calLoading");
+    if (load) load.classList.add("show");
+    try {
+      renderHeader();
+      currentPolls = await loadPolls();
+      renderGrid(currentPolls);
+      scrollToFirst(currentPolls);
+    } finally {
+      if (load) load.classList.remove("show");
+    }
+  }
+
+  // ── Theme toggle ───────────────────────────────────────────
+  function currentTheme() {
+    return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+  }
+  function applyTheme(theme) {
+    document.documentElement.dataset.theme = theme;
+    try { localStorage.setItem("fb_theme", theme); } catch (e) { /* ignore */ }
+    const btn = document.getElementById("themeToggle");
+    // Show the icon for the mode you'd switch TO.
+    if (btn) btn.textContent = theme === "dark" ? "☀" : "☾";
   }
 
   window.pageInit = async function () {
+    applyTheme(currentTheme());  // sync the toggle icon to the seeded theme
+    document.getElementById("themeToggle").addEventListener("click", () => {
+      applyTheme(currentTheme() === "dark" ? "light" : "dark");
+    });
     document.getElementById("prevWeek").addEventListener("click", async () => {
       weekStart = addDays(weekStart, -7);
       await refresh();
