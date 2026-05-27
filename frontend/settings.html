@@ -6,9 +6,22 @@
 <title>Settings — Food Bot</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  /* Hide role-gated UI before first paint so a member never sees the admin
+     tabs flash on navigation, and an admin never sees them disappear. */
+  [data-role="loading"] .admin-only,
+  [data-role="loading"] .member-only,
+  [data-role="member"]  .admin-only,
+  [data-role="admin"]   .member-only { display: none !important; }
+</style>
 <script>
-  // Apply the shared theme before first paint so dark mode never flashes.
+  // Pre-paint: apply the last-known role + theme so the nav and dark mode
+  // render in their final state immediately. app.js re-confirms via /api/me.
   (function () {
+    try {
+      var r = localStorage.getItem("fb_role");
+      if (r === "admin" || r === "member") document.documentElement.dataset.role = r;
+    } catch (e) { /* ignore */ }
     try {
       var t = localStorage.getItem("fb_theme");
       if (t !== "dark" && t !== "light") {
