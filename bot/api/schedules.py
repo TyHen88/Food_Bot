@@ -46,6 +46,7 @@ class ScheduleBody(BaseModel):
     payload: Optional[str] = None
     message_text: Optional[str] = None   # text to send
     image: Optional[str] = None          # Telegram file_id (uploaded) or assets/ filename
+    image_name: Optional[str] = None     # original filename, for display when editing
     run_date: Optional[str] = None       # YYYY-MM-DD => one-time; "" => recurring weekly
     days_of_week: Optional[str] = None
     time_of_day: Optional[str] = None
@@ -232,6 +233,7 @@ async def create_schedule(
         "payload": body.payload or "",
         "message_text": message_text,
         "image": image,
+        "image_name": (body.image_name or "").strip(),
         "run_date": run_date,
         "days_of_week": "" if run_date else (body.days_of_week or ""),
         "time_of_day": body.time_of_day,
@@ -273,6 +275,8 @@ async def update_schedule(
         fields["image"] = body.image
         # Keep legacy action_type roughly in sync for display.
         fields.setdefault("action_type", "QR_PHOTO" if body.image.strip() else "TEXT")
+    if body.image_name is not None:
+        fields["image_name"] = body.image_name.strip()
     if body.run_date is not None:
         fields["run_date"] = body.run_date.strip()
         # A one-time date and weekly recurrence are mutually exclusive.

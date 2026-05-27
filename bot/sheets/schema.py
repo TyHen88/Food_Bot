@@ -51,7 +51,7 @@ TABS: Dict[str, List[str]] = {
         # filename) and send whichever is set. run_date set => one-time on that
         # date (DateTrigger); empty => recurring weekly via days_of_week.
         "schedule_id", "name", "action_type", "payload",
-        "message_text", "image", "run_date",
+        "message_text", "image", "image_name", "run_date",
         "days_of_week", "time_of_day", "target_chat_ids",
         "is_active", "created_at",
     ],
