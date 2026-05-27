@@ -36,6 +36,17 @@ logger = logging.getLogger(__name__)
 FRONTEND_DIR = Path(__file__).parent / "frontend"
 
 
+class NoCacheStaticFiles(StaticFiles):
+    """Serve the Mini App with ``Cache-Control: no-cache`` so WebViews (notably
+    Telegram's) revalidate every load instead of pinning a stale app.js/HTML.
+    ETag/Last-Modified still yield cheap 304s when nothing changed."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 async def _webhook_watchdog(application, expected_url: str, secret_token: str | None,
                             interval: int = 60) -> None:
     """Re-register the webhook if Telegram ever reports it missing/wrong.
@@ -180,7 +191,7 @@ async def telegram_webhook(
 app.include_router(api_router)
 
 if FRONTEND_DIR.exists():
-    app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
+    app.mount("/", NoCacheStaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
 else:
     logger.warning(f"Frontend directory not found at {FRONTEND_DIR} — Mini App will 404")
 
