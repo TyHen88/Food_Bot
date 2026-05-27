@@ -44,7 +44,15 @@
       ".fb-spinner{width:34px;height:34px;border-radius:50%;" +
       "border:3px solid var(--border,rgba(0,0,0,.12));border-top-color:var(--accent,#2D6A4F);" +
       "animation:fb-spin .7s linear infinite}" +
-      "@keyframes fb-spin{to{transform:rotate(360deg)}}";
+      "@keyframes fb-spin{to{transform:rotate(360deg)}}" +
+      // Slim top progress bar shown whenever an /api request is in flight.
+      ".fb-bar{position:fixed;top:0;left:50%;transform:translateX(-50%);" +
+      "width:100%;max-width:var(--frame-w,430px);height:3px;overflow:hidden;" +
+      "z-index:10000;opacity:0;transition:opacity .3s ease;pointer-events:none}" +
+      ".fb-bar.active{opacity:1}" +
+      ".fb-bar::before{content:'';position:absolute;top:0;height:100%;width:40%;" +
+      "background:var(--accent,#2D6A4F);animation:fb-slide 1.1s infinite ease-in-out}" +
+      "@keyframes fb-slide{0%{left:-40%}100%{left:100%}}";
     document.head.appendChild(style);
 
     const mount = () => {
@@ -54,6 +62,11 @@
       overlay.className = "fb-loading";
       overlay.innerHTML = '<div class="fb-spinner"></div>';
       document.body.appendChild(overlay);
+
+      const bar = document.createElement("div");
+      bar.id = "fb-bar";
+      bar.className = "fb-bar";
+      document.body.appendChild(bar);
     };
     if (document.body) mount();
     else document.addEventListener("DOMContentLoaded", mount);
@@ -62,6 +75,15 @@
   function hideLoading() {
     const el = document.getElementById("fb-loading");
     if (el) el.classList.add("hide");
+  }
+
+  // Top progress bar driven by in-flight /api requests, so every data fetch
+  // (initial load and later refreshes/saves) shows a loading indicator.
+  let _pending = 0;
+  function bumpLoading(delta) {
+    _pending = Math.max(0, _pending + delta);
+    const bar = document.getElementById("fb-bar");
+    if (bar) bar.classList.toggle("active", _pending > 0);
   }
 
   const tg = window.Telegram && window.Telegram.WebApp;
@@ -96,7 +118,13 @@
         options.headers || {},
         { "X-Telegram-Init-Data": this.initData },
       );
-      const resp = await fetch(`/api${path}`, { ...options, headers });
+      bumpLoading(1);
+      let resp;
+      try {
+        resp = await fetch(`/api${path}`, { ...options, headers });
+      } finally {
+        bumpLoading(-1);
+      }
       if (!resp.ok) {
         let detail = `HTTP ${resp.status}`;
         try {
