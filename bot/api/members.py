@@ -2,7 +2,7 @@
 /api/members — read-only list of users for the Mini App's Members page.
 
 Each row exposes the minimum the UI needs:
-    { user_id, name, phone, status, username, last_active_at }
+    { user_id, name, phone, role, status, username, last_active_at }
 
 `status` is derived from votes: "Active" if the user voted in the last
 ACTIVITY_WINDOW_DAYS, otherwise "Inactive". Newly inserted rows with no
@@ -193,11 +193,13 @@ async def list_members(
 
         full_name = (u.get("full_name") or "").strip()
         username = (u.get("username") or "").strip()
+        is_admin = str(u.get("role", "")).strip().upper() == "ADMIN"
         out.append({
             "user_id": uid,
             "name": full_name or username or f"User{uid}",
             "username": username,
             "phone": (u.get("phone_number") or "").strip(),
+            "role": "Admin" if is_admin else "Member",
             "status": "Active" if is_active else "Inactive",
             "last_active_at": latest.isoformat() if latest else "",
         })

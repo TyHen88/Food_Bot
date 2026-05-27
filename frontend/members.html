@@ -140,13 +140,15 @@
     color: var(--text);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .mb-phone {
+  .mb-role {
     font-size: 10px;
-    color: var(--text-muted);
     margin-top: 1px;
-    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    color: var(--text-muted);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .03em;
   }
-  .mb-phone.missing { font-family: inherit; opacity: 0.6; }
+  .mb-role.admin { color: var(--accent); }
   .mb-status {
     display: inline-flex; align-items: center; gap: 4px;
     font-size: 9px;
@@ -362,16 +364,16 @@
     for (const m of rows) {
       const card = document.createElement("div");
       card.className = "mb-card";
-      const phoneHtml = m.phone
-        ? `<div class="mb-phone">${escapeHtml(m.phone)}</div>`
-        : `<div class="mb-phone missing">No phone</div>`;
+      const role = String(m.role || "Member");
+      const roleClass = role.toLowerCase() === "admin" ? "admin" : "member";
+      const roleHtml = `<div class="mb-role ${roleClass}">${escapeHtml(role)}</div>`;
       const statusClass = String(m.status).toLowerCase() === "active" ? "active" : "inactive";
 
       card.innerHTML = `
         <div class="mb-avatar c-${colorIndex(m.user_id)}">${escapeHtml(initials(m.name))}</div>
         <div class="mb-info">
           <div class="mb-name">${escapeHtml(m.name)}</div>
-          ${phoneHtml}
+          ${roleHtml}
         </div>
         <span class="mb-status ${statusClass}">${escapeHtml(m.status)}</span>
       `;
