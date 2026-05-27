@@ -29,6 +29,41 @@
     } catch (_) { /* localStorage unavailable — fall back to the loading gate */ }
   })();
 
+  // Full-screen loading overlay shown on every page until its data finishes
+  // fetching. Injected here (shared) so all tabs get it without per-page markup;
+  // runPageInit() hides it once loadAuth + the page's pageInit resolve.
+  (function injectLoading() {
+    const style = document.createElement("style");
+    style.id = "fb-loading-style";
+    style.textContent =
+      ".fb-loading{position:fixed;top:0;bottom:0;left:50%;transform:translateX(-50%);" +
+      "width:100%;max-width:var(--frame-w,430px);display:flex;align-items:center;" +
+      "justify-content:center;background:var(--bg,#F7F5F0);z-index:9999;" +
+      "transition:opacity .25s ease}" +
+      ".fb-loading.hide{opacity:0;pointer-events:none}" +
+      ".fb-spinner{width:34px;height:34px;border-radius:50%;" +
+      "border:3px solid var(--border,rgba(0,0,0,.12));border-top-color:var(--accent,#2D6A4F);" +
+      "animation:fb-spin .7s linear infinite}" +
+      "@keyframes fb-spin{to{transform:rotate(360deg)}}";
+    document.head.appendChild(style);
+
+    const mount = () => {
+      if (document.getElementById("fb-loading")) return;
+      const overlay = document.createElement("div");
+      overlay.id = "fb-loading";
+      overlay.className = "fb-loading";
+      overlay.innerHTML = '<div class="fb-spinner"></div>';
+      document.body.appendChild(overlay);
+    };
+    if (document.body) mount();
+    else document.addEventListener("DOMContentLoaded", mount);
+  })();
+
+  function hideLoading() {
+    const el = document.getElementById("fb-loading");
+    if (el) el.classList.add("hide");
+  }
+
   const tg = window.Telegram && window.Telegram.WebApp;
   if (tg) {
     tg.ready();
@@ -141,13 +176,15 @@
   // Each page defines a `window.pageInit` AFTER this script tag.
   // Wait for the rest of the body to parse, fetch auth, then call it.
   async function runPageInit() {
-    await loadAuth();
-    if (typeof window.pageInit === "function") {
-      try {
+    try {
+      await loadAuth();
+      if (typeof window.pageInit === "function") {
         await window.pageInit();
-      } catch (err) {
-        window.FoodBot.toast(err.message || String(err), "error");
       }
+    } catch (err) {
+      window.FoodBot.toast(err.message || String(err), "error");
+    } finally {
+      hideLoading();
     }
   }
   if (document.readyState === "loading") {
