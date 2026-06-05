@@ -131,6 +131,56 @@ async def snapshot_from_poll(
     return row
 
 
+def _normalize_items(items: Any) -> List[Dict[str, Any]]:
+    """Coerce a caller-supplied items list into the stored item shape.
+
+    Drops blank entries (no dish and no name), clamps qty to >= 1, and keeps
+    any per-voter user_id so an edited order still maps back to its members.
+    """
+    out: List[Dict[str, Any]] = []
+    for it in items or []:
+        if not isinstance(it, dict):
+            continue
+        item_name = str(it.get("item_name", "")).strip()
+        name = str(it.get("name", "")).strip()
+        if not item_name and not name:
+            continue
+        try:
+            qty = int(it.get("qty", 1) or 1)
+        except (TypeError, ValueError):
+            qty = 1
+        uid = it.get("user_id", "") or ""
+        out.append({
+            "user_id": uid,
+            "name": name or (f"User{uid}" if uid else "Guest"),
+            "item_name": item_name,
+            "qty": max(1, qty),
+        })
+    return out
+
+
+async def update_items(order_id: str, items: Any) -> Optional[Dict[str, Any]]:
+    """Replace an existing order's `item` list (admin edit from the Mini App).
+
+    Only the item snapshot changes; the owner/payer (user_id/username),
+    created_at and order_date are left untouched. Returns the updated row, or
+    None if no order exists for `order_id`.
+    """
+    item_json = json.dumps(_normalize_items(items), ensure_ascii=False)
+
+    if is_configured():
+        existing = await repo.find_by_pk("order", order_id)
+        if not existing:
+            return None
+        return await repo.update("order", order_id, {"item": item_json})
+
+    existing = _mem_orders.get(order_id)
+    if not existing:
+        return None
+    existing["item"] = item_json
+    return existing
+
+
 async def get_by_poll(poll_id: str) -> Optional[Dict[str, Any]]:
     """Return the latest order row for a poll, or None."""
     if is_configured():

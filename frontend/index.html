@@ -463,6 +463,40 @@
   .btn-primary { background: var(--today); color: #fff; }
   .btn-secondary { background: var(--surface2); color: var(--text); }
 
+  /* Admin item editor (calendar detail sheet) — add / edit / remove items */
+  .items-editor { display: flex; flex-direction: column; gap: 6px; }
+  .item-edit-row { display: flex; gap: 6px; align-items: center; }
+  .item-edit-row input {
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--text); border-radius: 8px; padding: 7px 9px;
+    font-family: inherit; font-size: 13px; min-width: 0;
+  }
+  .item-edit-row input:focus { outline: none; border-color: var(--blue); }
+  .item-edit-row .item-name { flex: 1; }
+  .item-edit-row .item-dish { flex: 1.6; }
+  .item-edit-row .item-qty  { width: 46px; text-align: center; flex-shrink: 0; }
+  .item-del {
+    flex-shrink: 0; width: 30px; height: 30px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--surface2);
+    color: var(--text-muted); cursor: pointer; font-size: 13px; line-height: 1;
+  }
+  .item-del:active { transform: scale(.92); }
+  .editor-actions { display: flex; gap: 8px; margin-top: 10px; }
+  .btn-add-item {
+    flex: 1; padding: 9px; border-radius: 8px;
+    border: 1px dashed var(--border); background: transparent;
+    color: var(--text-muted); cursor: pointer; font-family: inherit;
+    font-size: 13px; font-weight: 600;
+  }
+  .btn-add-item:active { transform: scale(.98); }
+  .btn-save-items {
+    flex: 1; padding: 9px; border-radius: 8px; border: none;
+    background: var(--blue); color: #fff; cursor: pointer;
+    font-family: inherit; font-size: 13px; font-weight: 600;
+  }
+  .btn-save-items:active { transform: scale(.98); }
+  .btn-save-items:disabled { opacity: .6; cursor: default; }
+
   /* Toast */
   .toast {
     position: fixed; bottom: calc(var(--bottom-nav) + 16px); left: 50%;
@@ -892,9 +926,24 @@
   }
 
   // ─── Event detail sheet ─────────────────────────────────────
-  // Renders straight from the order object loaded for the calendar — for
-  // members `items`/`paid_by` are already scoped to them server-side.
+  // Admins get inline CRUD over the order's items (add / edit / remove);
+  // members see the read-only grouped list. The write is gated server-side too
+  // (PUT /orders/{id}/items is require_admin), so this is UI convenience only.
+  let detailOrder = null;   // the order currently shown in the sheet
+  let detailItems = [];     // admin working copy of detailOrder.items
+
   function openPollDetail(p) {
+    detailOrder = p;
+    const isAdmin = !!(window.FoodBot && window.FoodBot.isAdmin);
+    detailItems = isAdmin && Array.isArray(p.items)
+      ? p.items.map((it) => ({
+          user_id: it.user_id || "",
+          name: it.name || "",
+          item_name: it.item_name || "",
+          qty: Number(it.qty) > 0 ? Number(it.qty) : 1,
+        }))
+      : [];
+
     const cm = COLOR_MAP[p.color];
     const heading = p.question || p.chat_title || "Order";
     document.getElementById("detailTitle").innerHTML = `🍱 ${escapeHtml(heading)}`;
@@ -918,7 +967,7 @@
           <div class="detail-icon">🍴</div>
           <div class="detail-label">Order${p.person_count > 1 ? "s" : ""}</div>
         </div>
-        <div id="ordersList" style="margin-left:32px;">${renderItemsList(p.items)}</div>
+        <div id="ordersList" style="margin-left:32px;"></div>
       </div>
       <div class="detail-row">
         <div class="detail-icon">💳</div>
@@ -928,7 +977,94 @@
         </div>
       </div>
     `;
+
+    if (isAdmin) renderItemsEditor();
+    else document.getElementById("ordersList").innerHTML = renderItemsList(p.items);
+
     document.getElementById("detailOverlay").classList.add("open");
+  }
+
+  // Build the admin editor inside #ordersList from detailItems, and wire it.
+  function renderItemsEditor() {
+    const host = document.getElementById("ordersList");
+    if (!host) return;
+    const rows = detailItems.map((it, i) => `
+      <div class="item-edit-row" data-idx="${i}" data-user-id="${escapeHtml(it.user_id || "")}">
+        <input class="item-name" type="text" placeholder="Name" value="${escapeHtml(it.name || "")}" />
+        <input class="item-dish" type="text" placeholder="Dish" value="${escapeHtml(it.item_name || "")}" />
+        <input class="item-qty" type="number" min="1" value="${Number(it.qty) > 0 ? Number(it.qty) : 1}" />
+        <button class="item-del" type="button" title="Remove" data-idx="${i}">✕</button>
+      </div>`).join("");
+
+    host.innerHTML = `
+      <div class="items-editor">
+        ${rows || '<div class="detail-sub">No items yet — add one below.</div>'}
+      </div>
+      <div class="editor-actions">
+        <button class="btn-add-item" type="button" id="addItemBtn">+ Add item</button>
+        <button class="btn-save-items" type="button" id="saveItemsBtn">Save</button>
+      </div>`;
+
+    host.querySelectorAll(".item-del").forEach((b) =>
+      b.addEventListener("click", () => removeItem(Number(b.dataset.idx))));
+    host.querySelector("#addItemBtn").addEventListener("click", addItem);
+    host.querySelector("#saveItemsBtn").addEventListener("click", saveItems);
+  }
+
+  // Pull the live input values back into detailItems before any re-render,
+  // so an in-progress edit isn't lost when a row is added/removed.
+  function syncEditorFromDom() {
+    const rows = document.querySelectorAll("#ordersList .item-edit-row");
+    detailItems = Array.from(rows).map((r) => ({
+      user_id: r.dataset.userId || "",
+      name: r.querySelector(".item-name").value.trim(),
+      item_name: r.querySelector(".item-dish").value.trim(),
+      qty: Math.max(1, parseInt(r.querySelector(".item-qty").value, 10) || 1),
+    }));
+  }
+
+  function addItem() {
+    syncEditorFromDom();
+    detailItems.push({ user_id: "", name: "", item_name: "", qty: 1 });
+    renderItemsEditor();
+  }
+
+  function removeItem(idx) {
+    syncEditorFromDom();
+    detailItems.splice(idx, 1);
+    renderItemsEditor();
+  }
+
+  async function saveItems() {
+    syncEditorFromDom();
+    const clean = detailItems.filter((it) => it.item_name || it.name);
+    const btn = document.getElementById("saveItemsBtn");
+    if (btn) { btn.disabled = true; btn.textContent = "Saving…"; }
+    try {
+      const updated = await window.FoodBot.api(
+        `/orders/${encodeURIComponent(detailOrder.order_id)}/items`,
+        { method: "PUT", body: JSON.stringify({ items: clean }) },
+      );
+      const items = Array.isArray(updated.items) ? updated.items : clean;
+      // Reflect the saved items in the open sheet and the calendar's cache so a
+      // re-open shows the edited order without a full reload.
+      detailOrder.items = items;
+      detailOrder.item_count = updated.item_count != null ? updated.item_count : items.length;
+      detailOrder.person_count = updated.person_count != null
+        ? updated.person_count
+        : new Set(items.map((it) => it.user_id || it.name)).size;
+      const cached = currentPolls.find((p) => p.order_id === detailOrder.order_id);
+      if (cached) {
+        cached.items = detailOrder.items;
+        cached.item_count = detailOrder.item_count;
+        cached.person_count = detailOrder.person_count;
+      }
+      toast("Order updated");
+      openPollDetail(detailOrder);  // re-render the sheet from the saved data
+    } catch (err) {
+      toast(err && err.message ? err.message : String(err), "error");
+      if (btn) { btn.disabled = false; btn.textContent = "Save"; }
+    }
   }
 
   // Group an order's flat item list by person → "Name: dish, dish".

@@ -16,12 +16,13 @@ Any verified Telegram user may call this (``require_member``):
 import json
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 
 from ..sheets import orders as sheets_orders
 from ..sheets import repo
 from ..sheets.client import is_configured
-from .auth import caller_user_id, require_member
+from .auth import caller_user_id, require_admin, require_member
 from .members import user_chats
 
 router = APIRouter(prefix="/orders", tags=["orders"])
@@ -170,3 +171,39 @@ async def list_orders(
     ]
     out.sort(key=lambda r: (r.get("order_date") or "", r.get("created_at") or ""))
     return out
+
+
+class ItemIn(BaseModel):
+    item_name: str = ""
+    name: str = ""
+    qty: int = 1
+    user_id: Optional[str] = None
+
+
+class ItemsBody(BaseModel):
+    items: List[ItemIn]
+
+
+@router.put("/{order_id}/items")
+async def update_order_items(
+    order_id: str,
+    body: ItemsBody,
+    _: dict = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Replace an order's item list. Admin-only (CRUD from the calendar detail
+    sheet: add / edit / remove items). Returns the reshaped order so the Mini
+    App can re-render without a reload; 404 if the order doesn't exist."""
+    items = [
+        {"item_name": it.item_name, "name": it.name, "qty": it.qty, "user_id": it.user_id}
+        for it in body.items
+    ]
+    row = await sheets_orders.update_items(order_id, items)
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Order not found"
+        )
+
+    titles = await _chat_titles()
+    polls = await _poll_meta()
+    users = await _user_names()
+    return _shape_order(row, titles=titles, polls=polls, users=users)
