@@ -463,39 +463,38 @@
   .btn-primary { background: var(--today); color: #fff; }
   .btn-secondary { background: var(--surface2); color: var(--text); }
 
-  /* Admin item editor (calendar detail sheet) — add / edit / remove items */
-  .items-editor { display: flex; flex-direction: column; gap: 6px; }
-  .item-edit-row { display: flex; gap: 6px; align-items: center; }
-  .item-edit-row input {
+  /* Admin item CRUD on the calendar detail sheet — per-row inline edit.
+     Read-only rows keep the list style; only the row whose pencil is tapped
+     turns into inputs. All actions are icon-only buttons. */
+  .items-editor { display: flex; flex-direction: column; }
+  .item-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 14px;
+  }
+  .item-row:last-child { border-bottom: none; }
+  .item-row .item-row-name { font-weight: 500; }
+  .item-row .item-row-dish { color: var(--text-muted); text-align: right; flex: 1; }
+  .item-row.editing { gap: 6px; }
+  .item-row input {
     background: var(--surface); border: 1px solid var(--border);
-    color: var(--text); border-radius: 8px; padding: 7px 9px;
+    color: var(--text); border-radius: 8px; padding: 6px 8px;
     font-family: inherit; font-size: 13px; min-width: 0;
   }
-  .item-edit-row input:focus { outline: none; border-color: var(--blue); }
-  .item-edit-row .item-name { flex: 1; }
-  .item-edit-row .item-dish { flex: 1.6; }
-  .item-edit-row .item-qty  { width: 46px; text-align: center; flex-shrink: 0; }
-  .item-del {
+  .item-row input:focus { outline: none; border-color: var(--blue); }
+  .item-row .item-name { flex: 1; }
+  .item-row .item-dish { flex: 1.4; }
+  .item-row .item-qty  { width: 44px; text-align: center; flex-shrink: 0; }
+  .icon-btn {
     flex-shrink: 0; width: 30px; height: 30px; border-radius: 8px;
-    border: 1px solid var(--border); background: var(--surface2);
-    color: var(--text-muted); cursor: pointer; font-size: 13px; line-height: 1;
+    border: none; background: transparent; color: var(--text-muted);
+    cursor: pointer; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center;
   }
-  .item-del:active { transform: scale(.92); }
-  .editor-actions { display: flex; gap: 8px; margin-top: 10px; }
-  .btn-add-item {
-    flex: 1; padding: 9px; border-radius: 8px;
-    border: 1px dashed var(--border); background: transparent;
-    color: var(--text-muted); cursor: pointer; font-family: inherit;
-    font-size: 13px; font-weight: 600;
-  }
-  .btn-add-item:active { transform: scale(.98); }
-  .btn-save-items {
-    flex: 1; padding: 9px; border-radius: 8px; border: none;
-    background: var(--blue); color: #fff; cursor: pointer;
-    font-family: inherit; font-size: 13px; font-weight: 600;
-  }
-  .btn-save-items:active { transform: scale(.98); }
-  .btn-save-items:disabled { opacity: .6; cursor: default; }
+  .icon-btn:active { transform: scale(.9); }
+  .icon-btn.add  { color: var(--blue); }
+  .icon-btn.save { color: var(--accent); }
+  .icon-btn.del  { color: #B83A3A; }
+  .items-empty { font-size: 13px; color: var(--text-muted); padding: 6px 0; }
 
   /* Toast */
   .toast {
@@ -926,11 +925,18 @@
   }
 
   // ─── Event detail sheet ─────────────────────────────────────
-  // Admins get inline CRUD over the order's items (add / edit / remove);
-  // members see the read-only grouped list. The write is gated server-side too
+  // Admins get inline, per-row CRUD over the order's items: each item keeps
+  // the read-only list style with a pencil at the end, and only the row whose
+  // pencil is tapped becomes inputs. An add icon appends a fresh editable row.
+  // All actions are icon-only; the write is gated server-side too
   // (PUT /orders/{id}/items is require_admin), so this is UI convenience only.
+  const ICON_EDIT = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>';
+  const ICON_ADD  = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>';
+  const ICON_SAVE = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+  const ICON_DEL  = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
+
   let detailOrder = null;   // the order currently shown in the sheet
-  let detailItems = [];     // admin working copy of detailOrder.items
+  let detailItems = [];     // admin working copy: [{user_id,name,item_name,qty,_edit,_new}]
 
   function openPollDetail(p) {
     detailOrder = p;
@@ -941,6 +947,7 @@
           name: it.name || "",
           item_name: it.item_name || "",
           qty: Number(it.qty) > 0 ? Number(it.qty) : 1,
+          _edit: false,
         }))
       : [];
 
@@ -952,6 +959,9 @@
     const d = p.createdDate;
     const dateLabel = `${DAY_LABELS[(d.getDay() + 6) % 7]}, ${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
     const paidBy = (p.paid_by && (p.paid_by.username || p.paid_by.user_id)) || "—";
+    const addBtn = isAdmin
+      ? `<button class="icon-btn add" type="button" id="addItemBtn" title="Add item" style="margin-left:auto;">${ICON_ADD}</button>`
+      : "";
 
     document.getElementById("detailBody").innerHTML = `
       <div class="detail-row">
@@ -966,6 +976,7 @@
         <div style="display:flex; align-items:center; gap:14px;">
           <div class="detail-icon">🍴</div>
           <div class="detail-label">Order${p.person_count > 1 ? "s" : ""}</div>
+          ${addBtn}
         </div>
         <div id="ordersList" style="margin-left:32px;"></div>
       </div>
@@ -978,92 +989,136 @@
       </div>
     `;
 
-    if (isAdmin) renderItemsEditor();
-    else document.getElementById("ordersList").innerHTML = renderItemsList(p.items);
+    if (isAdmin) {
+      renderAdminItems();
+      const add = document.getElementById("addItemBtn");
+      if (add) add.addEventListener("click", addItem);
+    } else {
+      document.getElementById("ordersList").innerHTML = renderItemsList(p.items);
+    }
 
     document.getElementById("detailOverlay").classList.add("open");
   }
 
-  // Build the admin editor inside #ordersList from detailItems, and wire it.
-  function renderItemsEditor() {
+  // Render the admin item list into #ordersList. View rows keep the list
+  // style + a pencil; the row(s) flagged `_edit` render as inputs.
+  function renderAdminItems() {
     const host = document.getElementById("ordersList");
     if (!host) return;
-    const rows = detailItems.map((it, i) => `
-      <div class="item-edit-row" data-idx="${i}" data-user-id="${escapeHtml(it.user_id || "")}">
-        <input class="item-name" type="text" placeholder="Name" value="${escapeHtml(it.name || "")}" />
-        <input class="item-dish" type="text" placeholder="Dish" value="${escapeHtml(it.item_name || "")}" />
-        <input class="item-qty" type="number" min="1" value="${Number(it.qty) > 0 ? Number(it.qty) : 1}" />
-        <button class="item-del" type="button" title="Remove" data-idx="${i}">✕</button>
-      </div>`).join("");
 
-    host.innerHTML = `
-      <div class="items-editor">
-        ${rows || '<div class="detail-sub">No items yet — add one below.</div>'}
-      </div>
-      <div class="editor-actions">
-        <button class="btn-add-item" type="button" id="addItemBtn">+ Add item</button>
-        <button class="btn-save-items" type="button" id="saveItemsBtn">Save</button>
-      </div>`;
-
-    host.querySelectorAll(".item-del").forEach((b) =>
-      b.addEventListener("click", () => removeItem(Number(b.dataset.idx))));
-    host.querySelector("#addItemBtn").addEventListener("click", addItem);
-    host.querySelector("#saveItemsBtn").addEventListener("click", saveItems);
-  }
-
-  // Pull the live input values back into detailItems before any re-render,
-  // so an in-progress edit isn't lost when a row is added/removed.
-  function syncEditorFromDom() {
-    const rows = document.querySelectorAll("#ordersList .item-edit-row");
-    detailItems = Array.from(rows).map((r) => ({
-      user_id: r.dataset.userId || "",
-      name: r.querySelector(".item-name").value.trim(),
-      item_name: r.querySelector(".item-dish").value.trim(),
-      qty: Math.max(1, parseInt(r.querySelector(".item-qty").value, 10) || 1),
-    }));
-  }
-
-  function addItem() {
-    syncEditorFromDom();
-    detailItems.push({ user_id: "", name: "", item_name: "", qty: 1 });
-    renderItemsEditor();
-  }
-
-  function removeItem(idx) {
-    syncEditorFromDom();
-    detailItems.splice(idx, 1);
-    renderItemsEditor();
-  }
-
-  async function saveItems() {
-    syncEditorFromDom();
-    const clean = detailItems.filter((it) => it.item_name || it.name);
-    const btn = document.getElementById("saveItemsBtn");
-    if (btn) { btn.disabled = true; btn.textContent = "Saving…"; }
-    try {
-      const updated = await window.FoodBot.api(
-        `/orders/${encodeURIComponent(detailOrder.order_id)}/items`,
-        { method: "PUT", body: JSON.stringify({ items: clean }) },
-      );
-      const items = Array.isArray(updated.items) ? updated.items : clean;
-      // Reflect the saved items in the open sheet and the calendar's cache so a
-      // re-open shows the edited order without a full reload.
-      detailOrder.items = items;
-      detailOrder.item_count = updated.item_count != null ? updated.item_count : items.length;
-      detailOrder.person_count = updated.person_count != null
-        ? updated.person_count
-        : new Set(items.map((it) => it.user_id || it.name)).size;
-      const cached = currentPolls.find((p) => p.order_id === detailOrder.order_id);
-      if (cached) {
-        cached.items = detailOrder.items;
-        cached.item_count = detailOrder.item_count;
-        cached.person_count = detailOrder.person_count;
+    const rowsHtml = detailItems.map((it, i) => {
+      if (it._edit) {
+        return `
+          <div class="item-row editing" data-idx="${i}" data-edit="1">
+            <input class="item-name" type="text" placeholder="Name" value="${escapeHtml(it.name || "")}" />
+            <input class="item-dish" type="text" placeholder="Dish" value="${escapeHtml(it.item_name || "")}" />
+            <input class="item-qty" type="number" min="1" value="${Number(it.qty) > 0 ? Number(it.qty) : 1}" />
+            <button class="icon-btn save" type="button" data-act="save" data-idx="${i}" title="Save">${ICON_SAVE}</button>
+            <button class="icon-btn del"  type="button" data-act="del"  data-idx="${i}" title="Remove">${ICON_DEL}</button>
+          </div>`;
       }
+      const dish = `${it.item_name || "—"}${Number(it.qty) > 1 ? " ×" + it.qty : ""}`;
+      return `
+        <div class="item-row" data-idx="${i}">
+          <span class="item-row-name">${escapeHtml(it.name || "—")}</span>
+          <span class="item-row-dish">${escapeHtml(dish)}</span>
+          <button class="icon-btn" type="button" data-act="edit" data-idx="${i}" title="Edit">${ICON_EDIT}</button>
+        </div>`;
+    }).join("");
+
+    host.innerHTML = `<div class="items-editor">${rowsHtml ||
+      '<div class="items-empty">No items yet — tap + to add one.</div>'}</div>`;
+
+    host.querySelectorAll(".icon-btn[data-act]").forEach((b) => {
+      const i = Number(b.dataset.idx);
+      const act = b.dataset.act;
+      b.addEventListener("click", () => {
+        if (act === "edit") { syncOpenEdits(); detailItems[i]._edit = true; renderAdminItems(); }
+        else if (act === "save") saveRow(i);
+        else if (act === "del") deleteRow(i);
+      });
+    });
+  }
+
+  // Pull live input values from any open edit rows back into detailItems, so a
+  // re-render (triggered by opening another row, adding, etc.) keeps the typing.
+  function syncOpenEdits() {
+    document.querySelectorAll('#ordersList .item-row[data-edit="1"]').forEach((r) => {
+      const i = Number(r.dataset.idx);
+      if (!detailItems[i]) return;
+      detailItems[i].name = r.querySelector(".item-name").value.trim();
+      detailItems[i].item_name = r.querySelector(".item-dish").value.trim();
+      detailItems[i].qty = Math.max(1, parseInt(r.querySelector(".item-qty").value, 10) || 1);
+    });
+  }
+
+  // Add icon → append a fresh row already in edit mode (not yet persisted).
+  function addItem() {
+    syncOpenEdits();
+    detailItems.push({ user_id: "", name: "", item_name: "", qty: 1, _edit: true, _new: true });
+    renderAdminItems();
+    const last = document.querySelector("#ordersList .item-row.editing:last-child .item-name");
+    if (last) last.focus();
+  }
+
+  async function saveRow(i) {
+    syncOpenEdits();
+    const it = detailItems[i];
+    if (it && !(it.item_name || "") && !(it.name || "")) {
+      toast("Enter a name or dish", "error");
+      return;
+    }
+    try {
+      await persistItems();
       toast("Order updated");
-      openPollDetail(detailOrder);  // re-render the sheet from the saved data
+      openPollDetail(detailOrder);  // re-render from the saved data (all view mode)
     } catch (err) {
       toast(err && err.message ? err.message : String(err), "error");
-      if (btn) { btn.disabled = false; btn.textContent = "Save"; }
+    }
+  }
+
+  async function deleteRow(i) {
+    syncOpenEdits();
+    const it = detailItems[i];
+    detailItems.splice(i, 1);
+    // A freshly-added row that was never saved isn't on the server — just drop it.
+    if (it && it._new) { renderAdminItems(); return; }
+    try {
+      await persistItems();
+      toast("Order updated");
+      openPollDetail(detailOrder);
+    } catch (err) {
+      toast(err && err.message ? err.message : String(err), "error");
+      renderAdminItems();
+    }
+  }
+
+  // PUT the current detailItems and fold the saved result back into the open
+  // order + the calendar cache so a re-open shows the edit without a reload.
+  async function persistItems() {
+    const clean = detailItems
+      .filter((it) => (it.item_name || "").trim() || (it.name || "").trim())
+      .map((it) => ({
+        user_id: it.user_id || "",
+        name: (it.name || "").trim(),
+        item_name: (it.item_name || "").trim(),
+        qty: Math.max(1, parseInt(it.qty, 10) || 1),
+      }));
+    const updated = await window.FoodBot.api(
+      `/orders/${encodeURIComponent(detailOrder.order_id)}/items`,
+      { method: "PUT", body: JSON.stringify({ items: clean }) },
+    );
+    const items = Array.isArray(updated.items) ? updated.items : clean;
+    detailOrder.items = items;
+    detailOrder.item_count = updated.item_count != null ? updated.item_count : items.length;
+    detailOrder.person_count = updated.person_count != null
+      ? updated.person_count
+      : new Set(items.map((it) => it.user_id || it.name)).size;
+    const cached = currentPolls.find((p) => p.order_id === detailOrder.order_id);
+    if (cached) {
+      cached.items = items;
+      cached.item_count = detailOrder.item_count;
+      cached.person_count = detailOrder.person_count;
     }
   }
 
