@@ -150,7 +150,19 @@
         let detail = `HTTP ${resp.status}`;
         try {
           const body = await resp.json();
-          if (body && body.detail) detail = body.detail;
+          if (body && body.detail != null) {
+            // FastAPI 422 returns detail as an array of {loc,msg,...} objects;
+            // flatten it to a readable string instead of "[object Object]".
+            if (typeof body.detail === "string") {
+              detail = body.detail;
+            } else if (Array.isArray(body.detail)) {
+              detail = body.detail
+                .map((e) => (e && e.msg ? e.msg : JSON.stringify(e)))
+                .join("; ");
+            } else {
+              detail = JSON.stringify(body.detail);
+            }
+          }
         } catch (_) { /* ignore */ }
         throw new Error(detail);
       }

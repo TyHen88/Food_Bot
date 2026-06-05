@@ -14,7 +14,7 @@ Any verified Telegram user may call this (``require_member``):
 """
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
@@ -177,7 +177,9 @@ class ItemIn(BaseModel):
     item_name: str = ""
     name: str = ""
     qty: int = 1
-    user_id: Optional[str] = None
+    # The snapshot JSON stores user_id as an int, but admin-added items send ""
+    # (no Telegram user). Accept either; we stringify before persisting.
+    user_id: Optional[Union[int, str]] = None
 
 
 class ItemsBody(BaseModel):
@@ -194,7 +196,12 @@ async def update_order_items(
     sheet: add / edit / remove items). Returns the reshaped order so the Mini
     App can re-render without a reload; 404 if the order doesn't exist."""
     items = [
-        {"item_name": it.item_name, "name": it.name, "qty": it.qty, "user_id": it.user_id}
+        {
+            "item_name": it.item_name,
+            "name": it.name,
+            "qty": it.qty,
+            "user_id": "" if it.user_id is None else str(it.user_id),
+        }
         for it in body.items
     ]
     row = await sheets_orders.update_items(order_id, items)
