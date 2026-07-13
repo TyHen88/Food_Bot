@@ -41,17 +41,35 @@ def is_configured() -> bool:
     return bool(GOOGLE_SHEET_ID and GOOGLE_CREDENTIALS_JSON)
 
 
-def _build_client() -> gspread.Client:
+def _parse_credentials_json(raw: str) -> dict:
+    """Parse GOOGLE_CREDENTIALS_JSON, repairing one common paste mistake.
+
+    Some env var UIs half-decode a pasted service-account file: the
+    private_key's ``\\n`` escapes get split into a literal backslash
+    followed by a real newline byte (instead of staying as the two
+    characters ``\\`` + ``n``), while surrounding quotes get manually
+    backslash-escaped. Both together make otherwise-correct JSON fail to
+    parse, so retry once with that specific pattern repaired before
+    giving up.
+    """
     try:
-        info = json.loads(GOOGLE_CREDENTIALS_JSON)
+        return json.loads(raw)
     except json.JSONDecodeError as e:
-        raise RuntimeError(
-            "GOOGLE_CREDENTIALS_JSON is not valid JSON. It must be the ENTIRE "
-            "service-account JSON file (the object that begins with "
-            "'{\"type\": \"service_account\", ...}'), pasted on one line — "
-            "not just the private_key field. "
-            f"Parse error: {e}"
-        ) from e
+        repaired = raw.replace("\\\n", "\\n").replace('\\"', '"')
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError:
+            raise RuntimeError(
+                "GOOGLE_CREDENTIALS_JSON is not valid JSON. It must be the ENTIRE "
+                "service-account JSON file (the object that begins with "
+                "'{\"type\": \"service_account\", ...}'), pasted on one line — "
+                "not just the private_key field. "
+                f"Parse error: {e}"
+            ) from e
+
+
+def _build_client() -> gspread.Client:
+    info = _parse_credentials_json(GOOGLE_CREDENTIALS_JSON)
     if not isinstance(info, dict) or info.get("type") != "service_account":
         raise RuntimeError(
             "GOOGLE_CREDENTIALS_JSON parsed but doesn't look like a service-account "
@@ -84,7 +102,7 @@ def get_spreadsheet() -> gspread.Spreadsheet:
             _spreadsheet = get_client().open_by_key(GOOGLE_SHEET_ID)
         except PermissionError as e:
             try:
-                info = json.loads(GOOGLE_CREDENTIALS_JSON)
+                info = _parse_credentials_json(GOOGLE_CREDENTIALS_JSON)
                 sa_email = info.get("client_email", "<service-account-email>")
             except Exception:
                 sa_email = "<service-account-email>"
