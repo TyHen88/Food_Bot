@@ -18,7 +18,15 @@ if not BOT_TOKEN:
 # Webhook Configuration
 # If WEBHOOK_URL is set, the bot runs in webhook mode (production / Railway).
 # If empty, main.py falls back to long polling for local development.
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip().rstrip("/")
+#
+# Render injects RENDER_EXTERNAL_URL (https://<service>.onrender.com) at
+# runtime. Falling back to it means the first deploy can register its own
+# webhook, without a second pass to paste the URL back in as WEBHOOK_URL.
+# Set WEBHOOK_URL explicitly to override (e.g. a custom domain).
+WEBHOOK_URL = (
+    os.getenv("WEBHOOK_URL", "").strip()
+    or os.getenv("RENDER_EXTERNAL_URL", "").strip()
+).rstrip("/")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 WEBHOOK_PATH = "/webhook"
 

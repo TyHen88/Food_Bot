@@ -110,3 +110,6 @@ celerybeat.pid
 .mypy_cache/
 .dmypy.json
 dmypy.json 
+
+#settings json
+.claude/settings.json

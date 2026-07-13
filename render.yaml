@@ -1,0 +1,38 @@
+services:
+  - type: web
+    name: food-bot
+    runtime: python
+    plan: free
+    region: singapore
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # PTB 20.1 crashes on 3.14 (weakref); pin away from Render's default.
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+
+      # Secrets — set these in the Render dashboard, not in git.
+      - key: BOT_TOKEN
+        sync: false
+      - key: GOOGLE_SHEET_ID
+        sync: false
+      - key: GOOGLE_CREDENTIALS_JSON
+        sync: false
+      - key: ADMIN_USER_IDS
+        sync: false
+
+      # Telegram echoes this back in X-Telegram-Bot-Api-Secret-Token.
+      - key: WEBHOOK_SECRET
+        generateValue: true
+
+      # main.py falls back to RENDER_EXTERNAL_URL when this is empty, so the
+      # first deploy self-registers its webhook. Set it explicitly only to
+      # point at a custom domain.
+      - key: WEBHOOK_URL
+        sync: false
+
+      - key: LOG_LEVEL
+        value: INFO
