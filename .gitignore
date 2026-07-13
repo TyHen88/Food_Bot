@@ -3,6 +3,11 @@
 .env.local
 .env.*.local
 
+# Google service-account credentials — NEVER commit these
+third-party-auth-*.json
+*-service-account*.json
+*credentials*.json
+
 # Python
 __pycache__/
 *.py[cod]

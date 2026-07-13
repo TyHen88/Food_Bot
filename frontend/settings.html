@@ -1,0 +1,520 @@
+﻿<!DOCTYPE html>
+<html lang="en" data-role="loading">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Settings — Food Bot</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  /* Hide role-gated UI before first paint so a member never sees the admin
+     tabs flash on navigation, and an admin never sees them disappear. */
+  [data-role="loading"] .admin-only,
+  [data-role="loading"] .member-only,
+  [data-role="member"]  .admin-only,
+  [data-role="admin"]   .member-only { display: none !important; }
+</style>
+<script>
+  // Pre-paint: apply the last-known role + theme so the nav and dark mode
+  // render in their final state immediately. app.js re-confirms via /api/me.
+  (function () {
+    try {
+      var r = localStorage.getItem("fb_role");
+      if (r === "admin" || r === "member") document.documentElement.dataset.role = r;
+    } catch (e) { /* ignore */ }
+    try {
+      var t = localStorage.getItem("fb_theme");
+      if (t !== "dark" && t !== "light") {
+        t = (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+      }
+      document.documentElement.dataset.theme = t;
+    } catch (e) { document.documentElement.dataset.theme = "light"; }
+  })();
+</script>
+<style>
+  :root {
+    --bg: #F7F5F0; --surface: #FFFFFF; --surface2: #F0EDE6; --border: #E2DDD6;
+    --text: #1A1714; --text-muted: #8C8880; --accent: #2D6A4F; --accent-light: #E8F4EE;
+    --orange: #E07B39; --orange-light: #FDF0E7; --blue: #3A6EA8; --blue-light: #EAF0F8;
+    --pink: #C2566A; --pink-light: #FAE8EC; --yellow: #C49B30; --yellow-light: #FBF4E0;
+    --gray-light: #F0EDE6; --shadow-sm: 0 2px 8px rgba(26,23,20,0.07);
+    --shadow-md: 0 4px 16px rgba(26,23,20,0.08);
+    --bottom-nav: 72px; --frame-w: 430px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html { background: #ECE9E1; height: 100%; }
+  body {
+    font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: var(--bg); color: var(--text);
+    min-height: 100vh; min-height: 100dvh;
+    max-width: var(--frame-w); margin: 0 auto; position: relative;
+    overflow-x: hidden; box-shadow: 0 0 40px rgba(26,23,20,0.06);
+    padding-bottom: calc(var(--bottom-nav) + 8px);
+  }
+  @media (min-width: 768px) { body { box-shadow: 0 0 64px rgba(26,23,20,0.08); } }
+
+  .header {
+    background: var(--surface);
+    padding: max(env(safe-area-inset-top, 8px), 8px) 16px 10px;
+    border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 100;
+  }
+  .header h1 {
+    font-family: 'DM Serif Display', serif; font-size: 20px; font-weight: 400;
+    letter-spacing: -0.4px; line-height: 1.1; margin-top: 2px;
+  }
+  .header .hint { color: var(--text-muted); font-size: 11px; margin-top: 3px; line-height: 1.35; }
+
+  .content { padding: 12px 14px 16px; }
+  .section { margin-bottom: 22px; }
+  .section-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 4px 4px 8px;
+  }
+  .section-title {
+    font-size: 10px; font-weight: 700; color: var(--text-muted);
+    text-transform: uppercase; letter-spacing: .06em;
+  }
+  .add-btn {
+    border: 1px solid var(--border); background: var(--surface);
+    color: var(--accent); font-family: inherit; font-size: 12px; font-weight: 600;
+    padding: 5px 10px; border-radius: 8px; cursor: pointer;
+  }
+  .add-btn:active { background: var(--surface2); }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 11px 12px; margin-bottom: 8px;
+    box-shadow: var(--shadow-sm);
+    display: flex; align-items: flex-start; gap: 10px;
+  }
+  .card-main { flex: 1; min-width: 0; }
+  .card-key { font-size: 12px; font-weight: 700; color: var(--text); word-break: break-word; }
+  .card-desc { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
+  .card-val {
+    font-size: 12px; color: var(--text); margin-top: 6px;
+    white-space: pre-wrap; word-break: break-word;
+    background: var(--surface2); border-radius: 8px; padding: 6px 8px;
+    max-height: 84px; overflow: hidden;
+  }
+  .card-val.empty { color: var(--text-muted); font-style: italic; }
+  .card-actions { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
+  .icon-btn {
+    width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--surface); cursor: pointer; font-size: 13px;
+    display: flex; align-items: center; justify-content: center; color: var(--text);
+  }
+  .icon-btn:active { background: var(--surface2); }
+  .icon-btn.danger { color: var(--pink); border-color: var(--pink-light); background: var(--pink-light); }
+
+  .empty { text-align: center; color: var(--text-muted); padding: 24px; font-size: 12px; }
+
+  /* Payer card */
+  .payer-avatar {
+    width: 34px; height: 34px; border-radius: 50%;
+    background: var(--accent-light); color: var(--accent);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 13px; flex-shrink: 0; text-transform: uppercase;
+  }
+  .payer-meta { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
+  .payer-qr { font-size: 10px; color: var(--accent); margin-top: 4px; word-break: break-all; }
+
+  /* Modal */
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(26,23,20,.45); backdrop-filter: blur(4px);
+    z-index: 300; opacity: 0; pointer-events: none; transition: opacity .25s;
+    display: flex; align-items: flex-end; justify-content: center;
+  }
+  .modal-overlay.open { opacity: 1; pointer-events: all; }
+  .modal-sheet {
+    background: var(--surface); border-radius: 24px 24px 0 0;
+    width: 100%; max-width: var(--frame-w); padding: 0 0 28px;
+    transform: translateY(100%); transition: transform .3s cubic-bezier(.32,1,.58,1);
+    max-height: 92vh; overflow-y: auto;
+  }
+  .modal-overlay.open .modal-sheet { transform: translateY(0); }
+  .modal-handle { width: 36px; height: 4px; border-radius: 2px; background: var(--border); margin: 12px auto 0; }
+  .modal-header { padding: 14px 20px 8px; display: flex; align-items: center; justify-content: space-between; }
+  .modal-title { font-family: 'DM Serif Display', serif; font-size: 20px; }
+  .modal-close {
+    width: 32px; height: 32px; border-radius: 50%; background: var(--surface2);
+    border: none; cursor: pointer; font-size: 16px; color: var(--text);
+  }
+  .modal-body { padding: 4px 20px; }
+  .field { margin-bottom: 14px; }
+  .field label {
+    display: block; font-size: 11px; font-weight: 600; color: var(--text-muted);
+    text-transform: uppercase; letter-spacing: .04em; margin-bottom: 5px;
+  }
+  .field input, .field textarea {
+    width: 100%; border: 1px solid var(--border); border-radius: 10px;
+    background: var(--surface); color: var(--text); font-family: inherit;
+    font-size: 14px; padding: 10px 12px;
+  }
+  .field input { height: 42px; }
+  .field textarea { min-height: 96px; resize: vertical; line-height: 1.4; }
+  .field input:focus, .field textarea:focus { outline: none; border-color: var(--accent); }
+  .field .sub { font-size: 10px; color: var(--text-muted); margin-top: 4px; }
+  .field input:disabled { background: var(--surface2); color: var(--text-muted); }
+  .modal-actions { display: flex; gap: 10px; padding: 8px 20px 0; }
+  .btn {
+    flex: 1; height: 46px; border-radius: 12px; border: none; cursor: pointer;
+    font-family: inherit; font-size: 14px; font-weight: 600; transition: transform .12s;
+  }
+  .btn:active { transform: scale(.97); }
+  .btn-save { background: var(--accent); color: #fff; }
+
+  /* Bottom nav */
+  .bottom-nav {
+    position: fixed; bottom: 0; left: 50%; transform: translateX(-50%);
+    width: 100%; max-width: var(--frame-w); height: var(--bottom-nav);
+    background: var(--surface); border-top: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-around;
+    padding: 0 8px env(safe-area-inset-bottom, 8px); z-index: 200;
+  }
+  .nav-item {
+    display: flex; flex-direction: column; align-items: center; gap: 3px;
+    cursor: pointer; padding: 8px 10px; border-radius: 12px; transition: background .15s;
+    text-decoration: none; flex: 1; min-width: 0; color: inherit;
+  }
+  .nav-item:active { background: var(--surface2); }
+  .nav-icon { width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; color: var(--text-muted); }
+  .nav-label { font-size: 10px; font-weight: 600; color: var(--text-muted); letter-spacing: 0.01em; }
+  .nav-item.active .nav-icon { color: var(--accent); }
+  .nav-item.active .nav-label { color: var(--accent); }
+
+  .toast {
+    position: fixed; bottom: calc(var(--bottom-nav) + 16px); left: 50%; transform: translateX(-50%);
+    background: var(--text); color: var(--surface); padding: 10px 16px; border-radius: 999px;
+    font-size: 13px; font-weight: 500; opacity: 0; transition: opacity .2s;
+    pointer-events: none; z-index: 400; max-width: calc(var(--frame-w) - 40px);
+  }
+  .toast.show { opacity: .95; }
+  .toast.error { background: #B83A3A; }
+
+  :root[data-theme="dark"] {
+    --bg: #161412; --surface: #1E1B17; --surface2: #2A261F; --border: #332F27;
+    --text: #F2EDE4; --text-muted: #8A8070; --accent: #58D69E;
+    --accent-light: rgba(45,106,79,0.22); --pink-light: rgba(194,86,106,0.20);
+  }
+  html[data-theme="dark"] { background: #0F0D0B; }
+</style>
+</head>
+<body>
+
+<header class="header">
+  <h1>Settings</h1>
+  <p class="hint">Manage the bot's messages and the people who pay for orders.</p>
+</header>
+
+<main class="content">
+  <section class="section">
+    <div class="section-head">
+      <span class="section-title">Common messages</span>
+      <button class="add-btn" id="addSetting">+ Add</button>
+    </div>
+    <div id="settingsList"></div>
+  </section>
+
+  <section class="section">
+    <div class="section-head">
+      <span class="section-title">Paid list — who pays for orders</span>
+    </div>
+    <div id="payersList"></div>
+  </section>
+</main>
+
+<!-- Setting modal -->
+<div class="modal-overlay" id="settingOverlay">
+  <div class="modal-sheet">
+    <div class="modal-handle"></div>
+    <div class="modal-header">
+      <div class="modal-title" id="settingTitle">Edit message</div>
+      <button class="modal-close" id="settingClose">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label for="s-key">Key</label>
+        <input id="s-key" type="text" placeholder="WELCOME_MESSAGE" />
+        <div class="sub">UPPER_SNAKE_CASE. Can't be changed after creation.</div>
+      </div>
+      <div class="field">
+        <label for="s-desc">Description</label>
+        <input id="s-desc" type="text" placeholder="What this message is for" />
+      </div>
+      <div class="field">
+        <label for="s-value">Value</label>
+        <textarea id="s-value" placeholder="Message text…"></textarea>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-save" id="settingSave">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Payer modal -->
+<div class="modal-overlay" id="payerOverlay">
+  <div class="modal-sheet">
+    <div class="modal-handle"></div>
+    <div class="modal-header">
+      <div class="modal-title" id="payerTitle">Edit payer</div>
+      <button class="modal-close" id="payerClose">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label for="p-name">Display name</label>
+        <input id="p-name" type="text" placeholder="Name shown as payer" />
+      </div>
+      <div class="field">
+        <label for="p-qr">QR image filename</label>
+        <input id="p-qr" type="text" placeholder="payment_qr.png" />
+        <div class="sub">A file in the bot's assets/ folder.</div>
+      </div>
+      <div class="field">
+        <label for="p-khqr">KHQR text</label>
+        <textarea id="p-khqr" placeholder="Raw KHQR payload (optional)"></textarea>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-save" id="payerSave">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Bottom nav -->
+<nav class="bottom-nav">
+  <a class="nav-item" href="/">
+    <span class="nav-icon">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+    </span>
+    <div class="nav-label">Calendar</div>
+  </a>
+  <a class="nav-item" href="/schedule.html">
+    <span class="nav-icon">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+    </span>
+    <div class="nav-label">Schedules</div>
+  </a>
+  <a class="nav-item admin-only" href="/templates.html">
+    <span class="nav-icon">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+    </span>
+    <div class="nav-label">Templates</div>
+  </a>
+  <a class="nav-item" href="/members.html">
+    <span class="nav-icon">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+    </span>
+    <div class="nav-label">Members</div>
+  </a>
+  <a class="nav-item active admin-only" href="/settings.html">
+    <span class="nav-icon">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+    </span>
+    <div class="nav-label">Settings</div>
+  </a>
+</nav>
+
+<div class="toast" id="toast"></div>
+
+<script src="/app.js?v=9"></script>
+<script>
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({
+      "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"
+    }[c]));
+  }
+  let toastTimer = null;
+  function toast(msg, kind) {
+    const el = document.getElementById("toast");
+    el.textContent = msg;
+    el.classList.toggle("error", kind === "error");
+    el.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove("show"), 2400);
+  }
+  function initials(name) {
+    const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return "·";
+    return parts.length === 1 ? parts[0].slice(0, 1) : parts[0][0] + parts[parts.length - 1][0];
+  }
+  const overlay = (id) => document.getElementById(id);
+  function openOverlay(id) { overlay(id).classList.add("open"); }
+  function closeOverlay(id) { overlay(id).classList.remove("open"); }
+
+  // ─── Common messages ─────────────────────────────────────────
+  let settings = [];
+  let editingKey = null;  // null = creating
+
+  async function loadSettings() {
+    settings = (await window.FoodBot.api("/settings")) || [];
+    renderSettings();
+  }
+  function renderSettings() {
+    const list = document.getElementById("settingsList");
+    list.textContent = "";
+    if (!settings.length) {
+      list.innerHTML = `<div class="empty">No settings yet. Tap “+ Add”.</div>`;
+      return;
+    }
+    for (const row of settings) {
+      const card = document.createElement("div");
+      card.className = "card";
+      const val = row.value || "";
+      card.innerHTML = `
+        <div class="card-main">
+          <div class="card-key">${escapeHtml(row.key)}</div>
+          ${row.description ? `<div class="card-desc">${escapeHtml(row.description)}</div>` : ""}
+          <div class="card-val ${val ? "" : "empty"}">${val ? escapeHtml(val) : "(empty)"}</div>
+        </div>
+        <div class="card-actions">
+          <button class="icon-btn" title="Edit" data-act="edit">✎</button>
+          <button class="icon-btn danger" title="Delete" data-act="del">🗑</button>
+        </div>`;
+      card.querySelector('[data-act="edit"]').addEventListener("click", () => openSetting(row));
+      card.querySelector('[data-act="del"]').addEventListener("click", () => deleteSetting(row));
+      list.appendChild(card);
+    }
+  }
+  function openSetting(row) {
+    editingKey = row ? row.key : null;
+    document.getElementById("settingTitle").textContent = row ? "Edit message" : "New message";
+    const keyInput = document.getElementById("s-key");
+    keyInput.value = row ? row.key : "";
+    keyInput.disabled = !!row;
+    document.getElementById("s-desc").value = row ? (row.description || "") : "";
+    document.getElementById("s-value").value = row ? (row.value || "") : "";
+    openOverlay("settingOverlay");
+  }
+  async function saveSetting() {
+    const value = document.getElementById("s-value").value;
+    const desc = document.getElementById("s-desc").value.trim();
+    const btn = document.getElementById("settingSave");
+    btn.disabled = true;
+    try {
+      if (editingKey) {
+        await window.FoodBot.api(`/settings/${encodeURIComponent(editingKey)}`,
+          { method: "PUT", body: JSON.stringify({ value }) });
+      } else {
+        const key = document.getElementById("s-key").value.trim().toUpperCase();
+        if (!key) { toast("Key is required", "error"); btn.disabled = false; return; }
+        await window.FoodBot.api("/settings",
+          { method: "POST", body: JSON.stringify({ key, value, description: desc }) });
+      }
+      toast("Saved");
+      closeOverlay("settingOverlay");
+      await loadSettings();
+    } catch (err) {
+      toast(err.message || String(err), "error");
+    } finally {
+      btn.disabled = false;
+    }
+  }
+  async function deleteSetting(row) {
+    if (!window.confirm(`Delete ${row.key}?`)) return;
+    try {
+      await window.FoodBot.api(`/settings/${encodeURIComponent(row.key)}`, { method: "DELETE" });
+      toast("Deleted");
+      await loadSettings();
+    } catch (err) {
+      toast(err.message || String(err), "error");
+    }
+  }
+
+  // ─── Paid list ───────────────────────────────────────────────
+  let payers = [];
+  let editingPayer = null;
+
+  async function loadPayers() {
+    try {
+      payers = (await window.FoodBot.api("/payers")) || [];
+    } catch (err) {
+      payers = [];
+    }
+    renderPayers();
+  }
+  function renderPayers() {
+    const list = document.getElementById("payersList");
+    list.textContent = "";
+    if (!payers.length) {
+      list.innerHTML = `<div class="empty">No payers yet. Someone becomes a payer the first time they tap the Order button.</div>`;
+      return;
+    }
+    for (const p of payers) {
+      const name = p.full_name || p.username || `User${p.user_id}`;
+      const card = document.createElement("div");
+      card.className = "card";
+      card.innerHTML = `
+        <div class="payer-avatar">${escapeHtml(initials(name))}</div>
+        <div class="card-main">
+          <div class="card-key">${escapeHtml(name)}</div>
+          <div class="payer-meta">
+            ${p.username ? "@" + escapeHtml(p.username) + " · " : ""}paid ${escapeHtml(String(p.times_paid || 0))}×
+          </div>
+          ${p.qr_filename ? `<div class="payer-qr">QR: ${escapeHtml(p.qr_filename)}</div>` : ""}
+        </div>
+        <div class="card-actions">
+          <button class="icon-btn" title="Edit" data-act="edit">✎</button>
+        </div>`;
+      card.querySelector('[data-act="edit"]').addEventListener("click", () => openPayer(p));
+      list.appendChild(card);
+    }
+  }
+  function openPayer(p) {
+    editingPayer = p.user_id;
+    document.getElementById("payerTitle").textContent = "Edit payer";
+    document.getElementById("p-name").value = p.full_name || p.username || "";
+    document.getElementById("p-qr").value = p.qr_filename || "";
+    document.getElementById("p-khqr").value = p.khqr_text || "";
+    openOverlay("payerOverlay");
+  }
+  async function savePayer() {
+    const btn = document.getElementById("payerSave");
+    btn.disabled = true;
+    try {
+      await window.FoodBot.api(`/payers/${encodeURIComponent(editingPayer)}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          full_name: document.getElementById("p-name").value.trim(),
+          qr_filename: document.getElementById("p-qr").value.trim(),
+          khqr_text: document.getElementById("p-khqr").value,
+        }),
+      });
+      toast("Saved");
+      closeOverlay("payerOverlay");
+      await loadPayers();
+    } catch (err) {
+      toast(err.message || String(err), "error");
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // ─── Boot ────────────────────────────────────────────────────
+  window.pageInit = async function () {
+    if (!(window.FoodBot && window.FoodBot.isAdmin)) { location.href = "/"; return; }
+
+    document.getElementById("addSetting").addEventListener("click", () => openSetting(null));
+    document.getElementById("settingClose").addEventListener("click", () => closeOverlay("settingOverlay"));
+    document.getElementById("settingSave").addEventListener("click", saveSetting);
+    document.getElementById("settingOverlay").addEventListener("click", (e) => {
+      if (e.target.id === "settingOverlay") closeOverlay("settingOverlay");
+    });
+    document.getElementById("payerClose").addEventListener("click", () => closeOverlay("payerOverlay"));
+    document.getElementById("payerSave").addEventListener("click", savePayer);
+    document.getElementById("payerOverlay").addEventListener("click", (e) => {
+      if (e.target.id === "payerOverlay") closeOverlay("payerOverlay");
+    });
+
+    try {
+      await loadSettings();
+    } catch (err) {
+      document.getElementById("settingsList").innerHTML =
+        `<div class="empty">${escapeHtml(err.message || String(err))}</div>`;
+    }
+    await loadPayers();
+  };
+</script>
+</body>
+</html>

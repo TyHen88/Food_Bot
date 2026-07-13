@@ -1,0 +1,428 @@
+﻿<!DOCTYPE html>
+<html lang="en" data-role="loading">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Members — Food Bot</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  /* Hide role-gated UI before first paint so a member never sees the admin
+     tabs flash on navigation, and an admin never sees them disappear. */
+  [data-role="loading"] .admin-only,
+  [data-role="loading"] .member-only,
+  [data-role="member"]  .admin-only,
+  [data-role="admin"]   .member-only { display: none !important; }
+</style>
+<script>
+  // Pre-paint: apply the last-known role + theme so the nav and dark mode
+  // render in their final state immediately. app.js re-confirms via /api/me.
+  (function () {
+    try {
+      var r = localStorage.getItem("fb_role");
+      if (r === "admin" || r === "member") document.documentElement.dataset.role = r;
+    } catch (e) { /* ignore */ }
+    try {
+      var t = localStorage.getItem("fb_theme");
+      if (t !== "dark" && t !== "light") {
+        t = (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+      }
+      document.documentElement.dataset.theme = t;
+    } catch (e) { document.documentElement.dataset.theme = "light"; }
+  })();
+</script>
+<style>
+  :root {
+    --bg: #F7F5F0;
+    --surface: #FFFFFF;
+    --surface2: #F0EDE6;
+    --border: #E2DDD6;
+    --text: #1A1714;
+    --text-muted: #8C8880;
+    --accent: #2D6A4F;
+    --accent-light: #E8F4EE;
+    --orange: #E07B39;
+    --orange-light: #FDF0E7;
+    --blue: #3A6EA8;
+    --blue-light: #EAF0F8;
+    --pink: #C2566A;
+    --pink-light: #FAE8EC;
+    --yellow: #C49B30;
+    --yellow-light: #FBF4E0;
+    --gray-light: #F0EDE6;
+    --today: #1A1714;
+    --shadow-sm: 0 2px 8px rgba(26,23,20,0.07);
+    --bottom-nav: 72px;
+    --frame-w: 430px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html { background: #ECE9E1; height: 100%; }
+  body {
+    font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    min-height: 100dvh;
+    max-width: var(--frame-w);
+    margin: 0 auto;
+    position: relative;
+    overflow-x: hidden;
+    box-shadow: 0 0 40px rgba(26,23,20,0.06);
+    padding-bottom: calc(var(--bottom-nav) + 8px);
+  }
+  @media (min-width: 768px) { body { box-shadow: 0 0 64px rgba(26,23,20,0.08); } }
+
+  /* ── HEADER ── */
+  .header {
+    background: var(--surface);
+    padding: max(env(safe-area-inset-top, 8px), 8px) 16px 10px;
+    border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 100;
+  }
+  .header h1 {
+    font-family: 'DM Serif Display', serif;
+    font-size: 20px;
+    font-weight: 400;
+    letter-spacing: -0.4px;
+    line-height: 1.1;
+    margin-top: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .header .hint {
+    color: var(--text-muted);
+    font-size: 11px;
+    margin-top: 3px;
+    line-height: 1.35;
+  }
+
+  /* ── List ── */
+  .member-list { padding: 10px 12px 12px; }
+  .empty {
+    text-align: center;
+    color: var(--text-muted);
+    padding: 40px 24px;
+    font-size: 12px;
+  }
+  .mb-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    box-shadow: var(--shadow-sm);
+  }
+  .mb-avatar {
+    width: 32px; height: 32px;
+    border-radius: 50%;
+    background: var(--orange-light);
+    color: var(--orange);
+    flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700;
+    font-size: 13px;
+    text-transform: uppercase;
+  }
+  .mb-avatar.c-0 { background: var(--orange-light); color: var(--orange); }
+  .mb-avatar.c-1 { background: var(--accent-light); color: var(--accent); }
+  .mb-avatar.c-2 { background: var(--blue-light); color: var(--blue); }
+  .mb-avatar.c-3 { background: var(--pink-light); color: var(--pink); }
+  .mb-avatar.c-4 { background: var(--yellow-light); color: var(--yellow); }
+  .mb-info { flex: 1; min-width: 0; }
+  .mb-name {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .mb-role {
+    font-size: 10px;
+    margin-top: 1px;
+    color: var(--text-muted);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .03em;
+  }
+  .mb-role.admin { color: var(--accent); }
+  .mb-status {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 9px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 999px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    flex-shrink: 0;
+  }
+  .mb-status.active   { background: var(--accent-light); color: var(--accent); }
+  .mb-status.inactive { background: var(--surface2); color: var(--text-muted); }
+  .mb-status::before {
+    content: '';
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: .9;
+  }
+
+  /* Section header above the list */
+  .list-head {
+    display: flex; align-items: baseline; justify-content: space-between;
+    padding: 4px 4px 8px;
+  }
+  .list-head .count {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-weight: 500;
+  }
+  .list-head .title {
+    font-size: 10px; font-weight: 700;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: .06em;
+  }
+
+  /* ── Bottom nav ── */
+  .bottom-nav {
+    position: fixed;
+    bottom: 0; left: 50%;
+    transform: translateX(-50%);
+    width: 100%; max-width: var(--frame-w);
+    height: var(--bottom-nav);
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-around;
+    padding: 0 8px env(safe-area-inset-bottom, 8px);
+    z-index: 200;
+  }
+  .nav-item {
+    display: flex; flex-direction: column; align-items: center; gap: 3px;
+    cursor: pointer; padding: 8px 10px; border-radius: 12px;
+    transition: background .15s;
+    text-decoration: none; flex: 1; min-width: 0; color: inherit;
+  }
+  .nav-item:active { background: var(--surface2); }
+  .nav-icon {
+    width: 22px; height: 22px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-muted);
+  }
+  .nav-label {
+    font-size: 10px; font-weight: 600;
+    color: var(--text-muted);
+    letter-spacing: 0.01em;
+  }
+  .nav-item.active .nav-icon { color: var(--accent); }
+  .nav-item.active .nav-label { color: var(--accent); }
+
+  /* ── Toast ── */
+  .toast {
+    position: fixed; bottom: calc(var(--bottom-nav) + 16px); left: 50%;
+    transform: translateX(-50%);
+    background: var(--text); color: var(--surface);
+    padding: 10px 16px; border-radius: 999px;
+    font-size: 13px; font-weight: 500;
+    opacity: 0; transition: opacity .2s;
+    pointer-events: none; z-index: 400;
+    max-width: calc(var(--frame-w) - 40px);
+  }
+  .toast.show { opacity: .95; }
+  .toast.error { background: #B83A3A; }
+
+  :root[data-theme="dark"] {
+    --bg: #161412;
+    --surface: #1E1B17;
+    --surface2: #2A261F;
+    --border: #332F27;
+    --text: #F2EDE4;
+    --text-muted: #8A8070;
+    --accent: #58D69E;
+    --accent-light: rgba(45, 106, 79, 0.22);
+    --orange-light: rgba(224, 123, 57, 0.18);
+    --blue-light: rgba(58, 110, 168, 0.20);
+    --pink-light: rgba(194, 86, 106, 0.20);
+    --yellow-light: rgba(196, 155, 48, 0.18);
+    --today: #F2EDE4;
+  }
+  html[data-theme="dark"] { background: #0F0D0B; }
+</style>
+</head>
+<body>
+
+<header class="header">
+  <h1 id="page-title">Members</h1>
+  <p class="hint" id="page-sub">People who have voted on a food poll.</p>
+</header>
+
+<main class="member-list">
+  <div class="list-head">
+    <span class="title">Members</span>
+    <span class="count" id="count">—</span>
+  </div>
+  <div id="list"></div>
+</main>
+
+<!-- Bottom nav -->
+<nav class="bottom-nav">
+  <a class="nav-item" href="/">
+    <span class="nav-icon">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+    </span>
+    <div class="nav-label">Calendar</div>
+  </a>
+  <a class="nav-item" href="/schedule.html">
+    <span class="nav-icon">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+    </span>
+    <div class="nav-label">Schedules</div>
+  </a>
+  <a class="nav-item admin-only" href="/templates.html">
+    <span class="nav-icon">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+    </span>
+    <div class="nav-label">Templates</div>
+  </a>
+  <a class="nav-item active" href="/members.html">
+    <span class="nav-icon">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+    </span>
+    <div class="nav-label">Members</div>
+  </a>
+  <a class="nav-item admin-only" href="/settings.html">
+    <span class="nav-icon">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+    </span>
+    <div class="nav-label">Settings</div>
+  </a>
+</nav>
+
+<div class="toast" id="toast"></div>
+
+<script src="/app.js?v=9"></script>
+<script>
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({
+      "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"
+    }[c]));
+  }
+
+  let toastTimer = null;
+  function toast(msg, kind) {
+    const el = document.getElementById("toast");
+    el.textContent = msg;
+    el.classList.remove("error");
+    if (kind === "error") el.classList.add("error");
+    el.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove("show"), 2400);
+  }
+
+  function applyChatHeader() {
+    // The Telegram WebApp only includes `chat` in init-data when the Mini App
+    // is launched via a chat's attachment menu (group / supergroup / channel).
+    // Fall back to the plain "Members" header otherwise.
+    const tg = window.Telegram && window.Telegram.WebApp;
+    const chat = tg && tg.initDataUnsafe && tg.initDataUnsafe.chat;
+    if (chat && chat.title) {
+      document.getElementById("page-title").textContent = chat.title;
+      document.getElementById("page-sub").textContent = "Members who have voted on a food poll.";
+    }
+  }
+
+  function initials(name) {
+    const parts = String(name).trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return "·";
+    if (parts.length === 1) return parts[0].slice(0, 1);
+    return (parts[0][0] + parts[parts.length - 1][0]);
+  }
+
+  function colorIndex(seed) {
+    let h = 0;
+    for (const ch of String(seed)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    return h % 5;
+  }
+
+  function renderMembers(rows) {
+    const list = document.getElementById("list");
+    list.textContent = "";
+
+    document.getElementById("count").textContent =
+      `${rows.length} ${rows.length === 1 ? "member" : "members"}`;
+
+    if (!rows.length) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "No members yet. They'll appear here after voting on their first poll.";
+      list.appendChild(empty);
+      return;
+    }
+
+    for (const m of rows) {
+      const card = document.createElement("div");
+      card.className = "mb-card";
+      const role = String(m.role || "Member");
+      const roleClass = role.toLowerCase() === "admin" ? "admin" : "member";
+      const roleHtml = `<div class="mb-role ${roleClass}">${escapeHtml(role)}</div>`;
+      const statusClass = String(m.status).toLowerCase() === "active" ? "active" : "inactive";
+
+      card.innerHTML = `
+        <div class="mb-avatar c-${colorIndex(m.user_id)}">${escapeHtml(initials(m.name))}</div>
+        <div class="mb-info">
+          <div class="mb-name">${escapeHtml(m.name)}</div>
+          ${roleHtml}
+        </div>
+        <span class="mb-status ${statusClass}">${escapeHtml(m.status)}</span>
+      `;
+      list.appendChild(card);
+    }
+  }
+
+  // Reverse handlers.encode_chat_param: "g<digits>" -> "-<digits>" (groups),
+  // "c<digits>" -> "<digits>". Plain numeric strings pass through unchanged.
+  function decodeChatParam(p) {
+    if (!p) return "";
+    const s = String(p);
+    if (s[0] === "g") return "-" + s.slice(1);
+    if (s[0] === "c") return s.slice(1);
+    return s;
+  }
+  function launchChatId() {
+    const tg = window.Telegram && window.Telegram.WebApp;
+    const u = tg && tg.initDataUnsafe;
+    // Attachment-menu launches include `chat`; direct-link (?startapp=...)
+    // launches from a group carry the chat id in start_param instead. If
+    // neither is present (opened from the bot DM), return "" and let the
+    // server scope to the chats the caller takes part in.
+    if (u && u.chat && u.chat.id != null) return String(u.chat.id);
+    if (u && u.start_param) return decodeChatParam(u.start_param);
+    return "";
+  }
+
+  async function refresh() {
+    try {
+      const cid = launchChatId();
+      const path = cid ? `/members?chat_id=${encodeURIComponent(cid)}` : "/members";
+      const rows = await window.FoodBot.api(path);
+      renderMembers(rows || []);
+    } catch (err) {
+      const list = document.getElementById("list");
+      list.textContent = "";
+      const e = document.createElement("div");
+      e.className = "empty";
+      e.textContent = err.message || String(err);
+      list.appendChild(e);
+      document.getElementById("count").textContent = "—";
+    }
+  }
+
+  window.pageInit = async function () {
+    applyChatHeader();
+    await refresh();
+  };
+</script>
+</body>
+</html>

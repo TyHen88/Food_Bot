@@ -15,6 +15,27 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN environment variable is required")
 
+# Webhook Configuration
+# If WEBHOOK_URL is set, the bot runs in webhook mode (production / Railway).
+# If empty, main.py falls back to long polling for local development.
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip().rstrip("/")
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
+WEBHOOK_PATH = "/webhook"
+
+# Admin bootstrap: comma-separated Telegram user IDs that get ADMIN role on first run
+_admin_raw = os.getenv("ADMIN_USER_IDS", "").strip()
+ADMIN_USER_IDS = {
+    int(uid) for uid in _admin_raw.split(",") if uid.strip().isdigit()
+}
+
+# LOCAL DEV ONLY — bypass Mini-App auth so the panel works in a regular browser.
+# Auth helper only honours this when WEBHOOK_URL is empty (local mode).
+DEV_BYPASS_AUTH = os.getenv("DEV_BYPASS_AUTH", "").strip().lower() in ("1", "true", "yes")
+
+# Google Sheets (used from Phase 1 onward; safe to be empty in Phase 0)
+GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "").strip()
+GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON", "").strip()
+
 # Logging Configuration
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 LOG_FILE = os.getenv("LOG_FILE", "bot.log")
