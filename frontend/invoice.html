@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en" data-role="loading">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Invoice — Food Bot</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  /* Invoice is admin-only — keep its body hidden until /api/me confirms role. */
+  [data-role="loading"] .admin-only,
+  [data-role="member"]  .admin-only { display: none !important; }
+  [data-role="admin"]   .member-only { display: none !important; }
+</style>
+<script>
+  (function () {
+    try {
+      var r = localStorage.getItem("fb_role");
+      if (r === "admin" || r === "member") document.documentElement.dataset.role = r;
+    } catch (e) { /* ignore */ }
+    try {
+      var t = localStorage.getItem("fb_theme");
+      if (t !== "dark" && t !== "light") {
+        t = (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+      }
+      document.documentElement.dataset.theme = t;
+    } catch (e) { document.documentElement.dataset.theme = "light"; }
+  })();
+</script>
+<style>
+  :root {
+    --bg: #F7F5F0; --surface: #FFFFFF; --surface2: #F0EDE6; --border: #E2DDD6;
+    --text: #1A1714; --text-muted: #8C8880;
+    --accent: #2D6A4F; --accent-light: #E8F4EE;
+    --orange: #E07B39; --orange-light: #FDF0E7;
+    --blue: #3A6EA8; --blue-light: #EAF0F8;
+    --pink: #C2566A; --pink-light: #FAE8EC;
+    --yellow: #C49B30; --yellow-light: #FBF4E0;
+    --shadow-sm: 0 2px 8px rgba(26,23,20,0.07);
+    --frame-w: 430px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html { background: #ECE9E1; height: 100%; }
+  body {
+    font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: var(--bg); color: var(--text);
+    min-height: 100vh; min-height: 100dvh;
+    max-width: var(--frame-w); margin: 0 auto; position: relative;
+    overflow-x: hidden; box-shadow: 0 0 40px rgba(26,23,20,0.06);
+    padding-bottom: 110px;
+  }
+  .header {
+    background: var(--surface);
+    padding: max(env(safe-area-inset-top, 8px), 8px) 16px 10px;
+    border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 100;
+  }
+  .header h1 {
+    font-family: 'DM Serif Display', serif; font-size: 20px; font-weight: 400;
+    letter-spacing: -0.4px; line-height: 1.1; margin-top: 2px;
+  }
+  .header .hint { color: var(--text-muted); font-size: 11px; margin-top: 3px; }
+
+  main { padding: 12px 12px 12px; }
+  .section-title {
+    font-size: 10px; font-weight: 700; color: var(--text-muted);
+    text-transform: uppercase; letter-spacing: .06em; margin: 16px 4px 8px;
+  }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 12px; margin-bottom: 8px;
+    box-shadow: var(--shadow-sm);
+  }
+
+  /* Rate banner */
+  .rate-banner {
+    display: flex; align-items: center; gap: 10px;
+    background: var(--blue-light); border: 1px solid var(--border);
+    border-radius: 12px; padding: 10px 12px; margin-bottom: 4px;
+  }
+  .rate-banner .rate-main { font-size: 15px; font-weight: 700; color: var(--blue); }
+  .rate-banner .rate-sub { font-size: 10px; color: var(--text-muted); margin-top: 1px; }
+
+  /* Price editor rows */
+  .price-row { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--border); }
+  .price-row:last-child { border-bottom: none; }
+  .price-row .pname { flex: 1; min-width: 0; font-size: 13px; font-weight: 600;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .price-row input {
+    width: 72px; padding: 7px 8px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--surface2); color: var(--text); font-size: 13px; text-align: right;
+  }
+  .price-row select {
+    padding: 7px 6px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--surface2); color: var(--text); font-size: 12px;
+  }
+  .price-row.unpriced .pname::after { content: " • no price"; color: var(--orange); font-weight: 500; font-size: 11px; }
+
+  .btn {
+    width: 100%; padding: 12px; border: none; border-radius: 10px;
+    font-size: 14px; font-weight: 600; cursor: pointer;
+  }
+  .btn-primary { background: var(--blue); color: #fff; }
+  .btn-primary:disabled { opacity: .45; cursor: not-allowed; }
+  .btn-ghost { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+  .btn + .btn { margin-top: 8px; }
+
+  /* Recipient cards */
+  .rcp { display: flex; flex-direction: column; gap: 6px; }
+  .rcp-head { display: flex; align-items: center; gap: 8px; }
+  .rcp-name { font-size: 14px; font-weight: 700; flex: 1; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .badge { font-size: 9px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+    text-transform: uppercase; letter-spacing: .04em; flex-shrink: 0; }
+  .badge.ok   { background: var(--accent-light); color: var(--accent); }
+  .badge.no   { background: var(--orange-light); color: var(--orange); }
+  .badge.sent { background: var(--accent-light); color: var(--accent); }
+  .badge.fail { background: var(--pink-light); color: var(--pink); }
+  .badge.group { background: var(--yellow-light); color: var(--yellow); }
+  .badge.link  { background: var(--blue-light); color: var(--blue); }
+
+  .seg { display: flex; gap: 6px; margin: 4px 4px 8px; }
+  .seg button {
+    flex: 1; padding: 9px 6px; border: 1px solid var(--border); border-radius: 9px;
+    background: var(--surface); color: var(--text-muted);
+    font-size: 11px; font-weight: 600; cursor: pointer;
+  }
+  .seg button.active { background: var(--blue); color: #fff; border-color: var(--blue); }
+  .fb-hint { font-size: 11px; color: var(--text-muted); margin: 0 4px 6px; }
+  .rcp-lines { font-size: 12px; color: var(--text-muted); }
+  .rcp-line { display: flex; justify-content: space-between; gap: 8px; padding: 1px 0; }
+  .rcp-total { font-size: 13px; font-weight: 700; margin-top: 2px; }
+  .rcp-warn { font-size: 11px; color: var(--orange); }
+
+  .summary { display: flex; gap: 8px; margin: 8px 4px 12px; }
+  .summary .stat { flex: 1; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 8px; text-align: center; box-shadow: var(--shadow-sm); }
+  .summary .num { font-size: 18px; font-weight: 700; }
+  .summary .lbl { font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; }
+
+  .notice { text-align: center; color: var(--text-muted); padding: 40px 24px; font-size: 13px; }
+
+  .toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: var(--text); color: var(--surface); padding: 10px 16px;
+    border-radius: 999px; font-size: 13px; font-weight: 500;
+    opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 400;
+    max-width: calc(var(--frame-w) - 40px);
+  }
+  .toast.show { opacity: .95; } .toast.error { background: #B83A3A; }
+
+  :root[data-theme="dark"] {
+    --bg: #161412; --surface: #1E1B17; --surface2: #2A261F; --border: #332F27;
+    --text: #F2EDE4; --text-muted: #8A8070; --accent: #58D69E;
+    --accent-light: rgba(45,106,79,.22); --orange-light: rgba(224,123,57,.18);
+    --blue-light: rgba(58,110,168,.20); --pink-light: rgba(194,86,106,.20);
+    --yellow-light: rgba(196,155,48,.18);
+  }
+  html[data-theme="dark"] { background: #0F0D0B; }
+</style>
+</head>
+<body>
+
+<header class="header">
+  <h1>🧾 Invoice</h1>
+  <p class="hint" id="page-sub">Set prices, then send each person their bill by DM.</p>
+</header>
+
+<main id="root">
+  <div class="notice">Loading…</div>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script src="/app.js?v=9"></script>
+<script>
+  function escapeHtml(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
+      "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"
+    }[c]));
+  }
+  const fmtUsd = (n) => "$" + (Number(n) || 0).toFixed(2);
+  const fmtKhr = (n) => (Number(n) || 0).toLocaleString("en-US") + "៛";
+
+  const params = new URLSearchParams(location.search);
+  const ORDER_ID = params.get("order_id") || "";
+
+  let preview = null;          // last /generate response (dry-run or real)
+  const priceEdits = {};       // item_name -> {price, currency} working copy
+  let fallbackMode = "deeplink";  // how to reach un-DM-able users
+
+  function confirmDialog(message) {
+    const tg = window.Telegram && window.Telegram.WebApp;
+    return new Promise((resolve) => {
+      if (tg && tg.showConfirm) tg.showConfirm(message, (ok) => resolve(!!ok));
+      else resolve(window.confirm(message));
+    });
+  }
+
+  // Collect the distinct dishes in this order with their current price/currency.
+  function distinctItems(p) {
+    const map = new Map();
+    for (const r of (p.recipients || [])) {
+      for (const ln of (r.lines || [])) {
+        if (!map.has(ln.item_name)) {
+          map.set(ln.item_name, {
+            price: ln.currency ? ln.unit_price : "",
+            currency: ln.currency || "USD",
+            unpriced: !ln.currency,
+          });
+        }
+      }
+    }
+    return map;
+  }
+
+  async function loadPreview() {
+    preview = await window.FoodBot.api("/invoices/generate", {
+      method: "POST",
+      body: JSON.stringify({ order_id: ORDER_ID, dry_run: true }),
+    });
+    render();
+  }
+
+  function fallbackDesc() {
+    if (fallbackMode === "deeplink")
+      return "Posts a group button; each person taps their name to get their bill privately (and becomes DM-able next time).";
+    if (fallbackMode === "group")
+      return "Posts each person's bill in the group and pings them. Less private — everyone sees it.";
+    return "Unreachable people won't be invoiced.";
+  }
+
+  function reachableCount(p) {
+    return (p.recipients || []).filter((r) => r.can_dm).length;
+  }
+  function unpricedCount(p) {
+    const s = new Set();
+    for (const r of (p.recipients || [])) for (const n of (r.unpriced || [])) s.add(n);
+    return s.size;
+  }
+
+  function render() {
+    const root = document.getElementById("root");
+    if (!preview) { root.innerHTML = '<div class="notice">No data.</div>'; return; }
+
+    const items = distinctItems(preview);
+    const reachable = reachableCount(preview);
+    const unpriced = unpricedCount(preview);
+    const isResult = preview.dry_run === false;
+
+    // ── Rate banner ──
+    const when = preview.rate_updated_at
+      ? new Date(preview.rate_updated_at).toLocaleDateString() : "—";
+    const src = preview.rate_source || "default";
+    let html = `
+      <div class="rate-banner">
+        <div style="font-size:20px;">💱</div>
+        <div style="flex:1;">
+          <div class="rate-main">1 USD = ${Number(preview.rate).toLocaleString("en-US")}៛</div>
+          <div class="rate-sub">source: ${escapeHtml(src)} · updated ${escapeHtml(when)}</div>
+        </div>
+      </div>`;
+
+    // ── Result banner (after a real send) ──
+    if (isResult) {
+      const parts = [`${preview.sent_count} DM'd`];
+      if (preview.deeplink_count) parts.push(`${preview.deeplink_count} private link`);
+      if (preview.group_posted_count) parts.push(`${preview.group_posted_count} in group`);
+      if (preview.unreachable_count) parts.push(`${preview.unreachable_count} unreachable`);
+      if (preview.failed_count) parts.push(`${preview.failed_count} failed`);
+      html += `
+        <div class="card" style="border-color:var(--accent);">
+          <div style="font-weight:700;font-size:14px;margin-bottom:2px;">✅ Invoices sent</div>
+          <div style="font-size:12px;color:var(--text-muted);">${parts.join(" · ")}</div>
+        </div>`;
+    }
+
+    // ── Price editor ──
+    html += `<div class="section-title">Dish prices</div><div class="card" id="pricesCard">`;
+    if (items.size === 0) {
+      html += '<div class="rcp-warn">This order has no items.</div>';
+    } else {
+      for (const [name, info] of items) {
+        const edit = priceEdits[name] || info;
+        const pv = edit.price === "" || edit.price == null ? "" : edit.price;
+        html += `
+          <div class="price-row ${info.unpriced && pv === "" ? "unpriced" : ""}">
+            <span class="pname">${escapeHtml(name)}</span>
+            <input type="number" min="0" step="0.01" inputmode="decimal"
+                   data-item="${escapeHtml(name)}" value="${escapeHtml(pv)}" placeholder="0.00" />
+            <select data-item="${escapeHtml(name)}">
+              <option value="USD" ${edit.currency === "USD" ? "selected" : ""}>USD</option>
+              <option value="KHR" ${edit.currency === "KHR" ? "selected" : ""}>KHR</option>
+            </select>
+          </div>`;
+      }
+    }
+    html += `</div>`;
+    if (items.size > 0) {
+      html += `<button class="btn btn-ghost" id="savePricesBtn">Save prices</button>`;
+    }
+
+    // ── Summary ──
+    html += `
+      <div class="summary">
+        <div class="stat"><div class="num">${preview.recipient_count != null ? preview.recipient_count : (preview.recipients || []).length}</div><div class="lbl">People</div></div>
+        <div class="stat"><div class="num">${reachable}</div><div class="lbl">Can DM</div></div>
+        <div class="stat"><div class="num" style="color:${unpriced ? "var(--orange)" : "inherit"}">${unpriced}</div><div class="lbl">Unpriced</div></div>
+      </div>`;
+
+    // ── Recipient cards ──
+    html += `<div class="section-title">Each person's bill</div>`;
+    for (const r of (preview.recipients || [])) {
+      let badge;
+      if (r.status === "sent") badge = '<span class="badge sent">DM sent</span>';
+      else if (r.status === "deeplink_sent") badge = '<span class="badge link">private link</span>';
+      else if (r.status === "group_posted") badge = '<span class="badge group">in group</span>';
+      else if (r.status === "failed") badge = '<span class="badge fail">failed</span>';
+      else if (r.status === "skipped_unreachable") badge = '<span class="badge no">no DM</span>';
+      else badge = r.can_dm ? '<span class="badge ok">can DM</span>' : '<span class="badge no">no DM</span>';
+
+      const lines = (r.lines || []).map((ln) => `
+        <div class="rcp-line">
+          <span>${escapeHtml(ln.item_name)} × ${ln.qty}</span>
+          <span>${ln.currency ? fmtUsd(ln.line_usd) : "—"}</span>
+        </div>`).join("");
+      const warn = (r.unpriced && r.unpriced.length)
+        ? `<div class="rcp-warn">⚠ no price: ${escapeHtml(r.unpriced.join(", "))}</div>` : "";
+      const err = r.error ? `<div class="rcp-warn">${escapeHtml(r.error)}</div>` : "";
+
+      html += `
+        <div class="card rcp">
+          <div class="rcp-head">
+            <span class="rcp-name">${escapeHtml(r.name)}</span>${badge}
+          </div>
+          <div class="rcp-lines">${lines}</div>
+          <div class="rcp-total">${fmtUsd(r.total_usd)} ≈ ${fmtKhr(r.total_khr)}</div>
+          ${warn}${err}
+        </div>`;
+    }
+
+    // ── Fallback selector (only when someone can't be DM'd) ──
+    const totalPeople = (preview.recipients || []).length;
+    const unreachableN = totalPeople - reachable;
+    if (unreachableN > 0) {
+      html += `<div class="section-title">${unreachableN} can't be DM'd</div>`;
+      html += `<div class="fb-hint">They haven't started a private chat with the bot. Choose how to reach them:</div>`;
+      html += `
+        <div class="seg" id="fallbackSeg">
+          <button data-mode="deeplink" class="${fallbackMode === "deeplink" ? "active" : ""}">Private link</button>
+          <button data-mode="group" class="${fallbackMode === "group" ? "active" : ""}">Post in group</button>
+          <button data-mode="none" class="${fallbackMode === "none" ? "active" : ""}">Skip</button>
+        </div>
+        <div class="fb-hint" id="fbDesc">${fallbackDesc()}</div>`;
+    }
+
+    // ── Generate button ──
+    const canSend = reachable > 0 || (unreachableN > 0 && fallbackMode !== "none");
+    let label;
+    if (isResult) label = "Re-send invoices";
+    else if (reachable > 0) label = `Generate & send ${reachable} invoice${reachable === 1 ? "" : "s"}`;
+    else label = "Send via fallback";
+    html += `<button class="btn btn-primary" id="generateBtn" ${canSend ? "" : "disabled"}>${label}</button>`;
+    if (!canSend) {
+      html += `<div class="rcp-warn" style="text-align:center;margin-top:8px;">
+        No one can be reached yet — pick "Private link" or "Post in group" above to invoice them.
+      </div>`;
+    }
+
+    root.innerHTML = html;
+    wire();
+  }
+
+  function readPriceInputs() {
+    document.querySelectorAll('#pricesCard input[data-item]').forEach((inp) => {
+      const name = inp.getAttribute("data-item");
+      const sel = document.querySelector(`#pricesCard select[data-item="${CSS.escape(name)}"]`);
+      priceEdits[name] = {
+        price: inp.value.trim(),
+        currency: sel ? sel.value : "USD",
+      };
+    });
+  }
+
+  async function savePrices() {
+    readPriceInputs();
+    const prices = Object.entries(priceEdits)
+      .filter(([, v]) => v.price !== "" && !isNaN(Number(v.price)))
+      .map(([item_name, v]) => ({ item_name, price: Number(v.price), currency: v.currency }));
+    if (!prices.length) { window.FoodBot.toast("Enter at least one price first.", "error"); return; }
+    try {
+      await window.FoodBot.api("/prices", { method: "PUT", body: JSON.stringify({ prices }) });
+      window.FoodBot.toast("Prices saved");
+      await loadPreview();   // recompute amounts with the new prices
+    } catch (err) {
+      window.FoodBot.toast(err.message || String(err), "error");
+    }
+  }
+
+  async function generate(force) {
+    try {
+      const res = await window.FoodBot.api("/invoices/generate", {
+        method: "POST",
+        body: JSON.stringify({ order_id: ORDER_ID, force: !!force, fallback: fallbackMode }),
+      });
+      preview = res;
+      render();
+      window.FoodBot.toast(`Sent ${res.sent_count}/${res.recipient_count}`);
+    } catch (err) {
+      const msg = err.message || String(err);
+      if (/already invoiced/i.test(msg)) {
+        if (await confirmDialog(msg + "\n\nResend anyway?")) return generate(true);
+        return;
+      }
+      window.FoodBot.toast(msg, "error");
+    }
+  }
+
+  function wire() {
+    const sp = document.getElementById("savePricesBtn");
+    if (sp) sp.addEventListener("click", savePrices);
+    const gb = document.getElementById("generateBtn");
+    if (gb) gb.addEventListener("click", () => generate(false));
+    // Fallback mode segmented control.
+    const seg = document.getElementById("fallbackSeg");
+    if (seg) {
+      seg.querySelectorAll("button[data-mode]").forEach((b) => {
+        b.addEventListener("click", () => {
+          fallbackMode = b.getAttribute("data-mode");
+          seg.querySelectorAll("button").forEach((x) => x.classList.remove("active"));
+          b.classList.add("active");
+          const desc = document.getElementById("fbDesc");
+          if (desc) desc.textContent = fallbackDesc();
+          // Re-render to refresh the Generate button's enabled state + label.
+          readPriceInputs();
+          render();
+        });
+      });
+    }
+    // Keep edits across re-renders triggered by typing.
+    document.querySelectorAll('#pricesCard input[data-item], #pricesCard select[data-item]')
+      .forEach((el) => el.addEventListener("change", readPriceInputs));
+  }
+
+  window.pageInit = async function () {
+    const root = document.getElementById("root");
+    if (!ORDER_ID) { root.innerHTML = '<div class="notice">No order specified.</div>'; return; }
+    if (!window.FoodBot.isAdmin) {
+      root.innerHTML = '<div class="notice">🔒 Invoices are admin-only.</div>';
+      return;
+    }
+    try {
+      await loadPreview();
+    } catch (err) {
+      root.innerHTML = `<div class="notice">${escapeHtml(err.message || String(err))}</div>`;
+    }
+  };
+</script>
+</body>
+</html>

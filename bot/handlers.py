@@ -63,15 +63,27 @@ async def _record_user(update: Update) -> None:
     if not is_configured() or not update.effective_user:
         return
     u = update.effective_user
-    chat_id = update.effective_chat.id if update.effective_chat else ""
+    chat = update.effective_chat
+    chat_id = chat.id if chat else ""
+    # A bot can only DM a user who has talked to it in a PRIVATE chat. Seeing a
+    # private-chat update from this user proves we can DM them later (per-user
+    # invoices). The private chat id equals the user id, but we store it
+    # explicitly so the invoice sender never has to assume that.
+    is_private = bool(chat) and getattr(chat, "type", None) == "private"
+    dm_fields = (
+        {"can_dm": "TRUE", "dm_chat_id": str(chat_id)} if is_private else {}
+    )
     try:
         existing = await sheets_repo.find_by_pk("user", u.id)
         if existing:
+            # Only ever flip can_dm on (private interaction) — never clear it
+            # when the same user is later seen acting in a group.
             await sheets_repo.update("user", u.id, {
                 "username": u.username or existing.get("username", ""),
                 "full_name": u.full_name or existing.get("full_name", ""),
                 "chat_id": chat_id or existing.get("chat_id", ""),
                 "last_active_at": sheets_repo.now_iso(),
+                **dm_fields,
             })
         else:
             await sheets_repo.create("user", {
@@ -85,6 +97,8 @@ async def _record_user(update: Update) -> None:
                 "dietary_notes": "",
                 "created_at": sheets_repo.now_iso(),
                 "last_active_at": sheets_repo.now_iso(),
+                "can_dm": "TRUE" if is_private else "FALSE",
+                "dm_chat_id": str(chat_id) if is_private else "",
             })
     except Exception as e:
         logger.warning(f"_record_user failed for user {u.id}: {e}")
@@ -348,12 +362,70 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 pass
 
 
+async def _redeem_invoice_link(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, token: str
+) -> bool:
+    """Deliver a pending invoice opened via t.me/<bot>?start=inv_<token>.
+
+    Identity-checked: only the user the invoice was created for may open it.
+    Returns True if the deep-link was handled (so /start skips the welcome)."""
+    try:
+        from .sheets import invoice_links
+
+        link = await invoice_links.get(token)
+        if not link:
+            await update.message.reply_text("This invoice link is no longer valid.")
+            return True
+        if str(link.get("user_id")) != str(update.effective_user.id):
+            await update.message.reply_text("This invoice link isn't for you. 🙏")
+            return True
+
+        # Reuse the same sender the API uses (photo+caption when a QR exists).
+        from .api.invoices import _ASSETS_DIR, _send_one_invoice
+
+        qr_filename = str(link.get("qr_filename", "")).strip()
+        qr_path = (_ASSETS_DIR / qr_filename) if qr_filename else None
+        if qr_path is not None and not qr_path.exists():
+            qr_path = None
+
+        await _send_one_invoice(
+            context.bot,
+            dm_chat_id=str(update.effective_chat.id),
+            text=str(link.get("text", "")),
+            qr_path=qr_path,
+            khqr_text=str(link.get("khqr_text", "")).strip(),
+        )
+        await invoice_links.mark_delivered(token)
+        await sheets_events.emit(
+            "INVOICE_LINK_REDEEMED",
+            entity_type="invoice_link", entity_id=token,
+            user_id=update.effective_user.id,
+        )
+        return True
+    except Exception as e:
+        logger.error(f"Invoice link redemption failed for {token}: {e}")
+        try:
+            await update.message.reply_text("Sorry, couldn't load your invoice right now.")
+        except Exception:
+            pass
+        return True
+
+
 async def handle_start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Subscribe chat and show welcome message."""
     try:
         chat = update.effective_chat
         user = update.effective_user
+        # Record first so can_dm flips TRUE for this private chat — a redeemed
+        # deep-link means the bot can DM this user directly from now on.
         await _record_user(update)
+
+        # Deep-link invoice delivery: t.me/<bot>?start=inv_<token>
+        args = context.args or []
+        if args and str(args[0]).startswith("inv_"):
+            if await _redeem_invoice_link(update, context, str(args[0])):
+                return
+
         await add_chat_for_scheduled_messages(
             chat.id,
             title=chat.title or chat.full_name or "",

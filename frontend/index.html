@@ -987,12 +987,24 @@
           <div class="detail-value">${escapeHtml(paidBy)}</div>
         </div>
       </div>
+      ${isAdmin ? `
+      <div class="detail-row" style="border-bottom:none;">
+        <div class="detail-icon">🧾</div>
+        <div class="detail-info" style="flex:1;">
+          <div class="detail-label">Invoice</div>
+          <button type="button" id="openInvoiceBtn" style="margin-top:6px;width:100%;padding:11px;border:none;border-radius:10px;background:var(--blue,#3A6EA8);color:#fff;font-size:14px;font-weight:600;cursor:pointer;">Generate invoices →</button>
+        </div>
+      </div>` : ""}
     `;
 
     if (isAdmin) {
       renderAdminItems();
       const add = document.getElementById("addItemBtn");
       if (add) add.addEventListener("click", addItem);
+      const inv = document.getElementById("openInvoiceBtn");
+      if (inv) inv.addEventListener("click", () => {
+        location.href = "/invoice.html?order_id=" + encodeURIComponent(p.order_id);
+      });
     } else {
       document.getElementById("ordersList").innerHTML = renderItemsList(p.items);
     }

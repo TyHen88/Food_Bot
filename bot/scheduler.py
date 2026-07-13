@@ -466,6 +466,33 @@ async def _register_cutoff_job(
     logger.info(f"Registered cutoff snapshot job at {hour:02d}:{minute:02d} (Mon-Fri)")
 
 
+async def _refresh_exchange_rate(bot: Optional[Bot] = None) -> None:
+    """Daily USD->KHR rate refresh. No-op when auto mode is off; never raises."""
+    from . import exchange
+    try:
+        info = await exchange.refresh_rate()
+        logger.info(f"Rate refresh job: {info}")
+    except Exception as e:
+        logger.error(f"Exchange rate refresh failed: {e}")
+
+
+async def _register_rate_refresh_job(
+    scheduler: AsyncIOScheduler, application: Application
+) -> None:
+    """Schedule a daily USD/KHR rate refresh (early, before invoices go out)."""
+    if not is_configured():
+        return
+    scheduler.add_job(
+        _refresh_exchange_rate,
+        trigger="cron",
+        hour=7, minute=30,
+        id="usd_khr_rate_refresh",
+        args=[application.bot],
+        replace_existing=True,
+    )
+    logger.info("Registered USD/KHR rate refresh job at 07:30 daily")
+
+
 async def reload_schedules(application: Application) -> None:
     """Re-read `schedule` tab and rebuild APScheduler jobs in place."""
     await setup_scheduler(application)
@@ -494,6 +521,7 @@ async def setup_scheduler(application: Application) -> None:
                     "no reminders will fire. Add rows in the spreadsheet."
                 )
             await _register_cutoff_job(_scheduler, application)
+            await _register_rate_refresh_job(_scheduler, application)
         else:
             await _register_fallback_jobs(_scheduler, application)
             logger.info(

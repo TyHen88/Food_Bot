@@ -15,7 +15,7 @@ Conventions (see PLAN.md "Sheets design rules"):
 
 from typing import Dict, List
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 10
 
 # Tab name → ordered list of column headers.
 # Order matters: first column is the PK; bootstrap.py writes headers in this order.
@@ -37,9 +37,15 @@ TABS: Dict[str, List[str]] = {
     "user": [
         # chat_id records the most recent chat the user interacted in, so
         # members can be looked up by chat without deriving from votes/orders.
+        # can_dm/dm_chat_id: a bot CANNOT start a private chat — it may only
+        # DM a user who has messaged it privately first. We set can_dm=TRUE
+        # and store the private chat id (== user_id) the moment a user
+        # interacts in a private chat (see handlers._record_user). Per-user
+        # invoice DMs can only target users whose can_dm is TRUE.
         "user_id", "username", "full_name", "phone_number", "chat_id",
         "role", "language",
         "dietary_notes", "created_at", "last_active_at",
+        "can_dm", "dm_chat_id",
     ],
     "chat": [
         "chat_id", "title", "type", "is_subscribed",
@@ -68,14 +74,35 @@ TABS: Dict[str, List[str]] = {
         # item: JSON array — [{"user_id": <id>, "name": "<user>", "item_name": "<food>", "qty": <n>}, ...]
         # user_id/username here record the *clicker* (payer); per-voter
         # identity lives in each item entry's user_id.
+        # invoiced_at: ISO timestamp set when per-user invoices were last
+        # generated/sent for this order. Guards against accidental double-send
+        # (POST /api/invoices/generate refuses to resend unless force=TRUE).
         "order_id", "poll_id", "chat_id", "user_id", "username",
-        "item", "order_date", "created_at",
+        "item", "order_date", "created_at", "invoiced_at",
+    ],
+    "price": [
+        # Per-dish price catalog used to turn an order into an invoice amount.
+        # item_name is the PK (matches the menu/option text). price is a plain
+        # number in `currency` (USD or KHR); the invoice converts to the other
+        # currency using the live USD/KHR rate (see bot/exchange.py).
+        "item_name", "price", "currency",
+        "is_active", "updated_at", "updated_by",
     ],
     "payer": [
         # One row per person who has tapped the Order button (the payer).
         # Upserted on each Order click; surfaced in the Settings "Paid list".
         "user_id", "username", "full_name", "qr_filename", "khqr_text",
         "times_paid", "last_paid_at", "created_at",
+    ],
+    "invoice_link": [
+        # A pending per-user invoice that couldn't be DM'd (the user hasn't
+        # started the bot privately). The deep-link fallback posts a group
+        # button t.me/<bot>?start=<token>; when that user taps it, /start
+        # redeems this row and delivers the stored invoice privately. The
+        # prebuilt `text` is a snapshot (no recompute at redemption time).
+        # Redemption is identity-checked: only user_id may open this token.
+        "token", "order_id", "user_id", "text", "qr_filename", "khqr_text",
+        "status", "created_at", "delivered_at",
     ],
     "history": [
         "event_id", "event_type", "entity_type", "entity_id",
@@ -148,6 +175,8 @@ SEED_COMMON_CODE: List[Dict[str, str]] = [
             ("CHAT_UNSUBSCRIBED",  "Chat unsubscribed from reminders"),
             ("SETTING_UPDATED",    "Setting updated"),
             ("SCHEDULE_UPDATED",   "Schedule created/updated/disabled"),
+            ("INVOICE_GENERATED",  "Per-user invoices generated/sent for an order"),
+            ("INVOICE_LINK_REDEEMED", "User opened their invoice via a deep-link"),
         ], start=1)
     ],
 ]
@@ -220,6 +249,37 @@ SEED_SETTING: List[Dict[str, str]] = [
      "description": ("Template for the bot's order-summary message when the "
                      "Order button is tapped. 1=classic receipt, 2=compact "
                      "single list, 3=boxed card per item."),
+     "updated_at": "", "updated_by": ""},
+
+    # --- Exchange rate (USD -> KHR) for invoices -------------------------
+    # ABA's forex page is Cloudflare-protected and can't be auto-scraped, so
+    # the rate is auto-fetched from a free FX API (open.er-api.com) by a daily
+    # scheduler job. An admin can pin ABA's exact "ABA Buys" figure by setting
+    # USD_KHR_RATE_AUTO=FALSE and /set USD_KHR_RATE <value>. See bot/exchange.py.
+    {"key": "USD_KHR_RATE",
+     "value": "4100",
+     "value_type": "number",
+     "description": "Effective USD->KHR rate used on invoices (riel per 1 USD).",
+     "updated_at": "", "updated_by": ""},
+
+    {"key": "USD_KHR_RATE_AUTO",
+     "value": "TRUE",
+     "value_type": "bool",
+     "description": ("If TRUE, the daily job overwrites USD_KHR_RATE from the "
+                     "FX API. Set FALSE to keep a manually pinned rate (e.g. "
+                     "ABA's exact buy rate)."),
+     "updated_at": "", "updated_by": ""},
+
+    {"key": "USD_KHR_RATE_AT",
+     "value": "",
+     "value_type": "string",
+     "description": "ISO timestamp of the last USD_KHR_RATE update.",
+     "updated_at": "", "updated_by": ""},
+
+    {"key": "USD_KHR_RATE_SOURCE",
+     "value": "",
+     "value_type": "string",
+     "description": "Where the current USD_KHR_RATE came from (API host or 'manual').",
      "updated_at": "", "updated_by": ""},
 ]
 

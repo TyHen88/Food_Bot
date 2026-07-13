@@ -14,7 +14,8 @@ Each module owns one resource:
 from fastapi import APIRouter
 
 from . import (
-    history, me, members, orders, payers, polls, schedules, settings, templates,
+    history, invoices, me, members, orders, payers, polls, prices, schedules,
+    settings, templates,
 )
 
 api_router = APIRouter(prefix="/api")
@@ -22,6 +23,8 @@ api_router.include_router(settings.router)
 api_router.include_router(schedules.router)
 api_router.include_router(history.router)
 api_router.include_router(orders.router)
+api_router.include_router(invoices.router)
+api_router.include_router(prices.router)
 api_router.include_router(payers.router)
 api_router.include_router(polls.router)
 api_router.include_router(members.router)

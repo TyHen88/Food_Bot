@@ -53,6 +53,11 @@ def _ensure_schema_sync() -> None:
         if missing:
             start_col = len(first_row) + 1
             end_col = start_col + len(missing) - 1
+            # Grow the grid first. A tab created with N columns rejects a write
+            # to column N+1 ("Range ... exceeds grid limits. Max columns: N"),
+            # so add the shortfall before writing the new header cells.
+            if end_col > ws.col_count:
+                ws.add_cols(end_col - ws.col_count)
             ws.update(
                 values=[missing],
                 range_name=f"{rowcol_to_a1(1, start_col)}:{rowcol_to_a1(1, end_col)}",
