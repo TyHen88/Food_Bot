@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Union
 from fastapi import APIRouter, Depends, HTTPException, Query, status, Request
 from pydantic import BaseModel
 
+from ..sheets import invoices as sheets_invoices
 from ..sheets import orders as sheets_orders
 from ..sheets import repo
 from ..sheets.client import is_configured
@@ -176,9 +177,13 @@ async def list_orders(
     titles = await _chat_titles()
     polls = await _poll_meta()
     users = await _user_names()
+    invoiced = await sheets_invoices.order_ids_with_invoice()
 
     out = [
-        _shape_order(row, titles=titles, polls=polls, users=users)
+        {
+            **_shape_order(row, titles=titles, polls=polls, users=users),
+            "has_invoice": str(row.get("order_id", "")).strip() in invoiced,
+        }
         for row in rows
     ]
     out.sort(key=lambda r: (r.get("order_date") or "", r.get("created_at") or ""))
@@ -228,6 +233,13 @@ async def update_order_items(
     return _shape_order(row, titles=titles, polls=polls, users=users)
 
 
+def _clean_item_name(name: Any) -> str:
+    """Strip leading list markers ("- dish", "• dish") that menu text often
+    carries into the item JSON — the invoice adds its own bullets."""
+    import re
+    return re.sub(r"^[\s\-•*·]+", "", str(name or "")).strip()
+
+
 class InvoiceItemPrice(BaseModel):
     item_name: str
     price: float
@@ -237,12 +249,65 @@ class InvoiceBody(BaseModel):
     prices: List[InvoiceItemPrice]
 
 
+def _build_invoice_text(
+    order_date: str,
+    user_orders: Dict[str, List[Dict[str, Any]]],
+    payer_name: str,
+    khqr_text: str = "",
+) -> str:
+    """Render the invoice message (Telegram HTML).
+
+    Format:
+        🧾 Order Invoice | 2026-07-15
+
+        ▪️ Name
+        • dish ×1   $1.75
+        Subtotal   $3.50        (only when the person has 2+ items)
+
+        ══════════════════════
+        💰 Total Due   $14.00
+        💳 Pay to Name
+        ══════════════════════
+    """
+    from html import escape
+
+    sep = "══════════════════════"
+    lines = [f"🧾 <b>Order Invoice</b> | {escape(order_date)}", ""]
+
+    grand_total = 0.0
+    for user_name, user_items in user_orders.items():
+        user_total = sum(i["cost"] for i in user_items)
+        grand_total += user_total
+
+        lines.append(f"▪️ <b>{escape(user_name)}</b>")
+        for i in user_items:
+            lines.append(
+                f"• {escape(str(i['item_name']))} ×{i['qty']}   "
+                f"<code>${i['cost']:.2f}</code>"
+            )
+        if len(user_items) > 1:
+            lines.append(f"<b>Subtotal</b>   <code>${user_total:.2f}</code>")
+        lines.append("")
+
+    lines.append(sep)
+    lines.append(f"💰 <b>Total Due</b>   <code>${grand_total:.2f}</code>")
+    lines.append(f"💳 <b>Pay to</b> {escape(payer_name)}")
+    lines.append(sep)
+
+    if khqr_text:
+        lines.append("")
+        lines.append("🔗 <b>Scan KHQR to Pay:</b>")
+        lines.append(f"<code>{escape(khqr_text)}</code>")
+
+    return "\n".join(lines)
+
+
 @router.post("/{order_id}/invoice")
 async def generate_order_invoice(
     order_id: str,
     body: InvoiceBody,
     request: Request,
-    _: dict = Depends(require_admin),
+    auth: dict = Depends(require_admin),
 ) -> Dict[str, Any]:
     """Calculate the invoice based on admin-provided item prices, and send a
 
@@ -260,24 +325,39 @@ async def generate_order_invoice(
             status_code=status.HTTP_400_BAD_REQUEST, detail="No items in this order"
         )
 
-    # Map item_name -> price
-    price_map = {p.item_name: p.price for p in body.prices}
+    # Price lookup tolerant of leading list markers: match the raw stored
+    # name first, then the cleaned one, so "- dish" and "dish" both resolve
+    # instead of silently falling back to $0.00.
+    price_map: Dict[str, float] = {}
+    for p in body.prices:
+        price_map[p.item_name] = p.price
+        price_map.setdefault(_clean_item_name(p.item_name), p.price)
 
-    # Group items by user so we can construct a nice breakdown
-    user_orders: Dict[str, List[Dict[str, Any]]] = {}
+    # Group by Telegram user id (fallback: display name) so a member whose
+    # display name changed between votes ("Tii" vs "Tii ♏️") gets ONE
+    # section; merge duplicate dishes within a person, summing quantities.
+    grouped: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    display_names: Dict[str, str] = {}
     for it in items:
-        user_name = it.get("name") or "Guest"
-        item_name = it.get("item_name") or "Unknown"
-        qty = int(it.get("qty") or 1)
-        price = price_map.get(item_name, 0.0)
-        cost = price * qty
+        uid = str(it.get("user_id") or "").strip()
+        user_name = str(it.get("name") or "Guest").strip() or "Guest"
+        key = uid or user_name
+        display_names[key] = user_name  # newest name wins
 
-        user_orders.setdefault(user_name, []).append({
-            "item_name": item_name,
-            "qty": qty,
-            "price": price,
-            "cost": cost
+        raw_name = str(it.get("item_name") or "Unknown")
+        item_name = _clean_item_name(raw_name) or "Unknown"
+        qty = int(it.get("qty") or 1)
+        price = price_map.get(raw_name, price_map.get(item_name, 0.0))
+
+        slot = grouped.setdefault(key, {}).setdefault(item_name, {
+            "item_name": item_name, "qty": 0, "price": price, "cost": 0.0,
         })
+        slot["qty"] += qty
+        slot["cost"] = slot["price"] * slot["qty"]
+
+    user_orders: Dict[str, List[Dict[str, Any]]] = {}
+    for key, dishes in grouped.items():
+        user_orders.setdefault(display_names[key], []).extend(dishes.values())
 
     # Fetch Payer's KHQR info (if exists)
     payer_id = row.get("user_id")
@@ -290,34 +370,13 @@ async def generate_order_invoice(
             khqr_text = payer_info.get("khqr_text") or ""
             payer_full_name = payer_info.get("full_name") or payer_full_name
 
-    # Format the Telegram Message using HTML
-    lines = []
-    lines.append(f"📋 <b>INVOICE — {row.get('chat_title') or 'Order'}</b>")
-    lines.append(f"📅 Date: {row.get('order_date') or ''}")
-    lines.append("")
-
-    grand_total = 0.0
-    for user_name, user_items in user_orders.items():
-        user_total = sum(i["cost"] for i in user_items)
-        grand_total += user_total
-
-        lines.append(f"👤 <b>{user_name}</b>")
-        for i in user_items:
-            lines.append(f"  • {i['item_name']} (x{i['qty']}) — ${i['cost']:.2f}")
-        lines.append(f"  <b>Total: ${user_total:.2f}</b>")
-        lines.append("")
-
-    lines.append("====================")
-    lines.append(f"💰 <b>Grand Total: ${grand_total:.2f}</b>")
-    lines.append("")
-    lines.append(f"🙏 Please transfer to <b>{payer_full_name}</b>")
-
-    if khqr_text:
-        lines.append("")
-        lines.append("🔗 <b>Scan KHQR to Pay:</b>")
-        lines.append(f"<code>{khqr_text}</code>")
-
-    invoice_text = "\n".join(lines)
+    invoice_text = _build_invoice_text(
+        str(row.get("order_date") or ""),
+        user_orders,
+        payer_full_name,
+        khqr_text,
+    )
+    grand_total = sum(i["cost"] for items in user_orders.values() for i in items)
 
     # Send message to Telegram Chat
     chat_id = row.get("chat_id")
@@ -337,6 +396,35 @@ async def generate_order_invoice(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=f"Failed to send invoice to group chat: {str(e)}"
             )
+
+    # Persist the invoice so it shows up in the Mini App's Invoices page
+    # (and the order flips to "View Invoice"). Failure to save must not
+    # undo a successful send — log and keep going.
+    details = [
+        {
+            "user_name": user_name,
+            "items": user_items,
+            "subtotal": round(sum(i["cost"] for i in user_items), 2),
+        }
+        for user_name, user_items in user_orders.items()
+    ]
+    try:
+        await sheets_invoices.save_sent(
+            order_id=str(row.get("order_id") or order_id),
+            poll_id=str(row.get("poll_id") or ""),
+            chat_id=str(chat_id or ""),
+            order_date=str(row.get("order_date") or ""),
+            details=details,
+            total=grand_total,
+            payer_user_id=str(payer_id or ""),
+            payer_name=payer_full_name,
+            sent_by=(auth.get("user") or {}).get("id"),
+        )
+    except Exception as e:
+        import logging
+        logging.getLogger("bot.api.orders").error(
+            f"Invoice sent but saving to the invoice sheet failed: {e}", exc_info=True
+        )
 
     return {"ok": True, "total": grand_total}
 

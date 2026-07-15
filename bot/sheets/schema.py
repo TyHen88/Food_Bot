@@ -15,7 +15,7 @@ Conventions (see PLAN.md "Sheets design rules"):
 
 from typing import Dict, List
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # Tab name → ordered list of column headers.
 # Order matters: first column is the PK; bootstrap.py writes headers in this order.
@@ -84,6 +84,14 @@ TABS: Dict[str, List[str]] = {
     "template": [
         "template_id", "name", "question", "options", "is_active",
         "created_at", "created_by"
+    ],
+    "invoice": [
+        # One row per order (PK invoice_id = order_id); re-sending updates the
+        # same row. `details` is a JSON array grouped per person:
+        # [{"user_name": "...", "items": [{"item_name","qty","price","cost"}], "subtotal": 1.5}]
+        "invoice_id", "order_id", "poll_id", "chat_id", "order_date",
+        "details", "total", "payer_user_id", "payer_name",
+        "sent_count", "last_sent_at", "created_at", "created_by",
     ],
 }
 
