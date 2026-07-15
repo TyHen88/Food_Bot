@@ -20,7 +20,7 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
-from .client import get_spreadsheet, run_sync, with_retry
+from .client import get_worksheet, run_sync, with_retry
 from .schema import TABS
 
 logger = logging.getLogger(__name__)
@@ -35,6 +35,10 @@ class SheetCache:
         self.ttl = ttl_seconds
         # tab_name -> (rows, fetched_at_monotonic)
         self._data: Dict[str, tuple[List[Dict[str, Any]], float]] = {}
+        # tab_name -> last time get_all() was called for it. The refresh loop
+        # only re-fetches recently-read tabs, so idle tabs (history,
+        # common_code, ...) stop burning the 60 reads/min Sheets quota.
+        self._last_access: Dict[str, float] = {}
         self._locks = {tab: asyncio.Lock() for tab in TABS}
         self._refresh_task: Optional[asyncio.Task] = None
 
@@ -44,16 +48,19 @@ class SheetCache:
         """Return all rows in `tab` as dicts. Refresh if stale or absent."""
         cached = self._data.get(tab)
         now = time.monotonic()
-        
+        self._last_access[tab] = now
+
         if cached is not None:
-            # If background refresh is active, trust it to keep data fresh.
-            # Never block the UI on stale reads.
+            # If background refresh is active, trust it to keep data fresh —
+            # but a tab the loop skipped as idle may be very stale on its
+            # first read after a quiet spell; re-fetch it then.
             if self._refresh_task and not self._refresh_task.done():
-                return cached[0]
+                if (now - cached[1]) < 3 * self.ttl:
+                    return cached[0]
             # Fallback for when no loop is running
-            if (now - cached[1]) < self.ttl:
+            elif (now - cached[1]) < self.ttl:
                 return cached[0]
-                
+
         await self._refresh_tab(tab)
         return self._data[tab][0]
 
@@ -132,12 +139,23 @@ class SheetCache:
         tasks = [self._refresh_tab(tab) for tab in TABS]
         await asyncio.gather(*tasks, return_exceptions=True)
 
+    async def refresh_active(self) -> None:
+        """Refresh only tabs read since the last couple of cycles. Keeps hot
+        tabs (vote, poll, order at lunchtime) fresh without spending quota on
+        tabs nobody is looking at."""
+        cutoff = time.monotonic() - 2 * self.ttl
+        active = [t for t in TABS if self._last_access.get(t, 0) >= cutoff]
+        if not active:
+            return
+        tasks = [self._refresh_tab(tab) for tab in active]
+        await asyncio.gather(*tasks, return_exceptions=True)
+
     async def _refresh_loop(self) -> None:
         try:
             await self.refresh_all()  # Warm up cache immediately on startup
             while True:
                 await asyncio.sleep(self.ttl)
-                await self.refresh_all()
+                await self.refresh_active()
         except asyncio.CancelledError:
             logger.info("Cache refresh loop cancelled")
             raise
@@ -160,8 +178,7 @@ class SheetCache:
 @with_retry()
 def _fetch_tab_sync(tab: str) -> List[Dict[str, Any]]:
     """Single sync call, suitable for run_sync + the retry decorator."""
-    ws = get_spreadsheet().worksheet(tab)
-    return ws.get_all_records()
+    return get_worksheet(tab).get_all_records()
 
 
 def _stringify(v: Any) -> str:

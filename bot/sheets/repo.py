@@ -17,6 +17,7 @@ behavior of the plain methods.
 
 import asyncio
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
@@ -24,8 +25,25 @@ from typing import Any, Callable, Dict, List, Optional
 from gspread.utils import rowcol_to_a1
 
 from .cache import cache
-from .client import get_spreadsheet, run_sync, with_retry
+from .client import get_worksheet, run_sync, with_retry
 from .schema import PRIMARY_KEYS, TABS
+
+# Header rows barely ever change (only a schema bump + bootstrap), yet every
+# write used to re-read row 1 — one full read request against the 60/min
+# quota. Cache them per process with a long TTL as a hedge against manual
+# column edits in the sheet.
+_HEADER_TTL_SECONDS = 3600.0
+_header_cache: Dict[str, tuple[List[str], float]] = {}
+
+
+def _headers(tab: str, ws) -> List[str]:
+    cached = _header_cache.get(tab)
+    now = time.monotonic()
+    if cached is not None and (now - cached[1]) < _HEADER_TTL_SECONDS:
+        return cached[0]
+    headers = ws.row_values(1)
+    _header_cache[tab] = (headers, now)
+    return headers
 
 logger = logging.getLogger(__name__)
 
@@ -155,8 +173,8 @@ def now_iso() -> str:
 
 @with_retry()
 def _append_sync(tab: str, row: Dict[str, Any]) -> None:
-    ws = get_spreadsheet().worksheet(tab)
-    headers = ws.row_values(1)
+    ws = get_worksheet(tab)
+    headers = _headers(tab, ws)
     values = [row.get(col, "") for col in headers]
     ws.append_row(values, value_input_option="USER_ENTERED")
 
@@ -164,8 +182,8 @@ def _append_sync(tab: str, row: Dict[str, Any]) -> None:
 @with_retry()
 def _upsert_sync(tab: str, row: Dict[str, Any]) -> None:
     """Update the row whose PK matches; append if no match."""
-    ws = get_spreadsheet().worksheet(tab)
-    headers = ws.row_values(1)
+    ws = get_worksheet(tab)
+    headers = _headers(tab, ws)
     pk_field = PRIMARY_KEYS[tab]
     if pk_field not in headers:
         raise RuntimeError(f"PK column '{pk_field}' missing from tab '{tab}'")
@@ -190,8 +208,8 @@ def _upsert_sync(tab: str, row: Dict[str, Any]) -> None:
 
 @with_retry()
 def _update_sync(tab: str, pk_value: Any, fields: Dict[str, Any]) -> None:
-    ws = get_spreadsheet().worksheet(tab)
-    headers = ws.row_values(1)
+    ws = get_worksheet(tab)
+    headers = _headers(tab, ws)
     pk_col_name = PRIMARY_KEYS[tab]
     if pk_col_name not in headers:
         raise RuntimeError(f"PK column '{pk_col_name}' missing from tab '{tab}'")
@@ -224,8 +242,8 @@ def _update_sync(tab: str, pk_value: Any, fields: Dict[str, Any]) -> None:
 
 @with_retry()
 def _delete_sync(tab: str, pk_value: Any) -> None:
-    ws = get_spreadsheet().worksheet(tab)
-    headers = ws.row_values(1)
+    ws = get_worksheet(tab)
+    headers = _headers(tab, ws)
     pk_col_index = headers.index(PRIMARY_KEYS[tab]) + 1
     pk_str = str(pk_value)
     pk_column_values = ws.col_values(pk_col_index)

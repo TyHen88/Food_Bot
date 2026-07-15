@@ -32,6 +32,7 @@ _SCOPES = [
 
 _client: Optional[gspread.Client] = None
 _spreadsheet: Optional[gspread.Spreadsheet] = None
+_worksheets: dict[str, gspread.Worksheet] = {}
 
 T = TypeVar("T")
 
@@ -101,15 +102,31 @@ def get_spreadsheet() -> gspread.Spreadsheet:
     return _spreadsheet
 
 
+def get_worksheet(tab: str) -> gspread.Worksheet:
+    """Cached Worksheet handle for `tab`.
+
+    gspread's Spreadsheet.worksheet() performs a metadata fetch — a real API
+    call that counts against the 60 reads/min quota — EVERY time it is
+    called. Tab handles never go stale (the GID is fixed), so cache them for
+    the process lifetime. This alone halves the bot's read-quota usage.
+    """
+    ws = _worksheets.get(tab)
+    if ws is None:
+        ws = get_spreadsheet().worksheet(tab)
+        _worksheets[tab] = ws
+    return ws
+
+
 def reset_client() -> None:
     """Drop cached client + spreadsheet (test hook, or after auth rotation)."""
     global _client, _spreadsheet
     _client = None
     _spreadsheet = None
+    _worksheets.clear()
 
 
 def with_retry(
-    *, max_attempts: int = 3, base_delay: float = 1.0
+    *, max_attempts: int = 5, base_delay: float = 2.0
 ) -> Callable[[Callable[..., T]], Callable[..., T]]:
     """
     Decorate a sync gspread call to retry on 429 / 5xx with exponential
