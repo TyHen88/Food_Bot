@@ -16,7 +16,7 @@ Any verified Telegram user may call this (``require_member``):
 import json
 from typing import Any, Dict, List, Optional, Union
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status, Request
 from pydantic import BaseModel
 
 from ..sheets import orders as sheets_orders
@@ -214,3 +214,117 @@ async def update_order_items(
     polls = await _poll_meta()
     users = await _user_names()
     return _shape_order(row, titles=titles, polls=polls, users=users)
+
+
+class InvoiceItemPrice(BaseModel):
+    item_name: str
+    price: float
+
+
+class InvoiceBody(BaseModel):
+    prices: List[InvoiceItemPrice]
+
+
+@router.post("/{order_id}/invoice")
+async def generate_order_invoice(
+    order_id: str,
+    body: InvoiceBody,
+    request: Request,
+    _: dict = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Calculate the invoice based on admin-provided item prices, and send a
+
+    formatted summary directly to the Telegram group chat.
+    """
+    row = await sheets_orders.get_by_poll(order_id)
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Order not found"
+        )
+
+    items = _parse_items(row.get("item"))
+    if not items:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="No items in this order"
+        )
+
+    # Map item_name -> price
+    price_map = {p.item_name: p.price for p in body.prices}
+
+    # Group items by user so we can construct a nice breakdown
+    user_orders: Dict[str, List[Dict[str, Any]]] = {}
+    for it in items:
+        user_name = it.get("name") or "Guest"
+        item_name = it.get("item_name") or "Unknown"
+        qty = int(it.get("qty") or 1)
+        price = price_map.get(item_name, 0.0)
+        cost = price * qty
+
+        user_orders.setdefault(user_name, []).append({
+            "item_name": item_name,
+            "qty": qty,
+            "price": price,
+            "cost": cost
+        })
+
+    # Fetch Payer's KHQR info (if exists)
+    payer_id = row.get("user_id")
+    khqr_text = ""
+    payer_full_name = row.get("username") or "the Payer"
+    if payer_id:
+        from ..sheets import payers as sheets_payers
+        payer_info = await sheets_payers.get(payer_id)
+        if payer_info:
+            khqr_text = payer_info.get("khqr_text") or ""
+            payer_full_name = payer_info.get("full_name") or payer_full_name
+
+    # Format the Telegram Message using HTML
+    lines = []
+    lines.append(f"📋 <b>INVOICE — {row.get('chat_title') or 'Order'}</b>")
+    lines.append(f"📅 Date: {row.get('order_date') or ''}")
+    lines.append("")
+
+    grand_total = 0.0
+    for user_name, user_items in user_orders.items():
+        user_total = sum(i["cost"] for i in user_items)
+        grand_total += user_total
+
+        lines.append(f"👤 <b>{user_name}</b>")
+        for i in user_items:
+            lines.append(f"  • {i['item_name']} (x{i['qty']}) — ${i['cost']:.2f}")
+        lines.append(f"  <b>Total: ${user_total:.2f}</b>")
+        lines.append("")
+
+    lines.append("====================")
+    lines.append(f"💰 <b>Grand Total: ${grand_total:.2f}</b>")
+    lines.append("")
+    lines.append(f"🙏 Please transfer to <b>{payer_full_name}</b>")
+
+    if khqr_text:
+        lines.append("")
+        lines.append("🔗 <b>Scan KHQR to Pay:</b>")
+        lines.append(f"<code>{khqr_text}</code>")
+
+    invoice_text = "\n".join(lines)
+
+    # Send message to Telegram Chat
+    chat_id = row.get("chat_id")
+    if chat_id:
+        try:
+            import logging
+            bot_logger = logging.getLogger("bot.api.orders")
+            application = request.app.state.application
+            await application.bot.send_message(
+                chat_id=int(chat_id),
+                text=invoice_text,
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            bot_logger.error(f"Failed to send Telegram invoice: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to send invoice to group chat: {str(e)}"
+            )
+
+    return {"ok": True, "total": grand_total}
+

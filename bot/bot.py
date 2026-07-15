@@ -16,6 +16,7 @@ from telegram import (
     BotCommandScopeDefault,
 )
 from telegram.ext import Application
+from telegram.request import HTTPXRequest
 
 from .config import BOT_TOKEN, setup_logging
 from .handlers import setup_handlers
@@ -77,9 +78,20 @@ def build_application() -> Application:
     """
     setup_logging()
 
+    # Increase connect / read timeouts beyond the 5 s default.
+    # The local network can reach api.telegram.org but TLS handshake can
+    # take > 5 s on first connect; 30 s covers any realistic latency.
+    request = HTTPXRequest(
+        connect_timeout=30,
+        read_timeout=30,
+        write_timeout=30,
+        pool_timeout=30,
+    )
+
     application = (
         Application.builder()
         .token(BOT_TOKEN)
+        .request(request)
         .job_queue(None)
         .post_init(_post_init)
         .build()

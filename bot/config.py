@@ -40,6 +40,12 @@ ADMIN_USER_IDS = {
 # Auth helper only honours this when WEBHOOK_URL is empty (local mode).
 DEV_BYPASS_AUTH = os.getenv("DEV_BYPASS_AUTH", "").strip().lower() in ("1", "true", "yes")
 
+# CORS — origins allowed to call the /api/* endpoints from a browser.
+# Comma-separated list of origins. In production set to your frontend URL.
+# Example: https://foodbot.vercel.app,http://localhost:3000
+_cors_raw = os.getenv("CORS_ORIGINS", "http://localhost:3000").strip()
+CORS_ORIGINS: list[str] = [o.strip() for o in _cors_raw.split(",") if o.strip()]
+
 # Google Sheets (used from Phase 1 onward; safe to be empty in Phase 0)
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "").strip()
 GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON", "").strip()

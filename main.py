@@ -15,12 +15,14 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from telegram import Update
 
 from bot import build_application
 from bot.api import api_router
 from bot.config import (
+    CORS_ORIGINS,
     WEBHOOK_PATH,
     WEBHOOK_SECRET,
     WEBHOOK_URL,
@@ -161,6 +163,16 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Food Bot", lifespan=lifespan)
+
+# Allow the Next.js frontend (and Telegram WebView) to call /api/* endpoints.
+# Origins are configured via the CORS_ORIGINS env var (default: localhost:3000).
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*", "X-Telegram-Init-Data"],
+)
 
 
 @app.get("/health")

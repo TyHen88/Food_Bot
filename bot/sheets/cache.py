@@ -35,17 +35,25 @@ class SheetCache:
         self.ttl = ttl_seconds
         # tab_name -> (rows, fetched_at_monotonic)
         self._data: Dict[str, tuple[List[Dict[str, Any]], float]] = {}
-        self._lock = asyncio.Lock()
+        self._locks = {tab: asyncio.Lock() for tab in TABS}
         self._refresh_task: Optional[asyncio.Task] = None
 
     # ---- read path ------------------------------------------------------
 
     async def get_all(self, tab: str) -> List[Dict[str, Any]]:
         """Return all rows in `tab` as dicts. Refresh if stale or absent."""
-        now = time.monotonic()
         cached = self._data.get(tab)
-        if cached is not None and (now - cached[1]) < self.ttl:
-            return cached[0]
+        now = time.monotonic()
+        
+        if cached is not None:
+            # If background refresh is active, trust it to keep data fresh.
+            # Never block the UI on stale reads.
+            if self._refresh_task and not self._refresh_task.done():
+                return cached[0]
+            # Fallback for when no loop is running
+            if (now - cached[1]) < self.ttl:
+                return cached[0]
+                
         await self._refresh_tab(tab)
         return self._data[tab][0]
 
@@ -106,23 +114,27 @@ class SheetCache:
     # ---- refresh --------------------------------------------------------
 
     async def _refresh_tab(self, tab: str) -> None:
-        async with self._lock:
+        async with self._locks[tab]:
             # Double-check after acquiring the lock; another coroutine may have refreshed.
             cached = self._data.get(tab)
             if cached is not None and (time.monotonic() - cached[1]) < self.ttl:
                 return
-            rows = await run_sync(_fetch_tab_sync, tab)
-            self._data[tab] = (rows, time.monotonic())
-
-    async def refresh_all(self) -> None:
-        for tab in TABS:
             try:
-                await self._refresh_tab(tab)
+                rows = await run_sync(_fetch_tab_sync, tab)
+                self._data[tab] = (rows, time.monotonic())
             except Exception as e:
                 logger.warning(f"Failed to refresh '{tab}': {e}")
+                # Update timestamp anyway so we don't spam retries immediately
+                if cached is not None:
+                    self._data[tab] = (cached[0], time.monotonic())
+
+    async def refresh_all(self) -> None:
+        tasks = [self._refresh_tab(tab) for tab in TABS]
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _refresh_loop(self) -> None:
         try:
+            await self.refresh_all()  # Warm up cache immediately on startup
             while True:
                 await asyncio.sleep(self.ttl)
                 await self.refresh_all()

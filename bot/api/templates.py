@@ -10,8 +10,9 @@ GET is open to any verified member; PUT is admin-only.
 """
 
 from typing import Optional
+import uuid
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
 
 from ..sheets import chat_settings, events, repo, settings
@@ -25,6 +26,12 @@ _STYLE_KEY = "ORDER_SUMMARY_STYLE"
 
 class StyleBody(BaseModel):
     value: str
+
+class TemplateCreate(BaseModel):
+    name: str
+    question: str
+    options: str
+
 
 
 @router.get("/style")
@@ -89,3 +96,43 @@ async def set_style(
         payload={"key": _STYLE_KEY, "new_value": value, "scope": "global"},
     )
     return {"style": value, "chat_id": "", "scoped": False}
+
+
+@router.get("")
+async def get_templates(auth: dict = Depends(require_admin)) -> list[dict]:
+    """List active poll templates."""
+    if not is_configured():
+        return []
+    rows = await repo.list_all("template")
+    active = [r for r in rows if str(r.get("is_active", "TRUE")).upper() == "TRUE"]
+    active.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    return active
+
+
+@router.post("")
+async def create_template(body: TemplateCreate, auth: dict = Depends(require_admin)) -> dict:
+    """Create a new poll template."""
+    if not is_configured():
+        raise HTTPException(status_code=500, detail="Sheets not configured")
+    user_id = (auth.get("user") or {}).get("id", "")
+    template_id = str(uuid.uuid4())
+    row = {
+        "template_id": template_id,
+        "name": body.name,
+        "question": body.question,
+        "options": body.options,
+        "is_active": "TRUE",
+        "created_at": repo.now_iso(),
+        "created_by": str(user_id),
+    }
+    await repo.create("template", row)
+    return row
+
+
+@router.delete("/{template_id}")
+async def delete_template(template_id: str, auth: dict = Depends(require_admin)) -> dict:
+    """Soft delete a poll template."""
+    if not is_configured():
+        raise HTTPException(status_code=500, detail="Sheets not configured")
+    await repo.update("template", template_id, {"is_active": "FALSE"})
+    return {"success": True}

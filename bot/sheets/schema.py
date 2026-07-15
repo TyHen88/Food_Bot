@@ -81,6 +81,10 @@ TABS: Dict[str, List[str]] = {
         "event_id", "event_type", "entity_type", "entity_id",
         "user_id", "chat_id", "payload", "created_at",
     ],
+    "template": [
+        "template_id", "name", "question", "options", "is_active",
+        "created_at", "created_by"
+    ],
 }
 
 # Primary key column per tab (first column by convention).
