@@ -27,7 +27,7 @@ from .config import (
     ERROR_POLL_NOT_FOUND,
     ORDER_CLOSED_MESSAGE,
     ORDER_NAME,
-    WEBHOOK_URL,
+    MINIAPP_URL,
     WELCOME_MESSAGE,
 )
 from .auth import admin_only
@@ -136,14 +136,14 @@ def _calendar_keyboard(chat, bot_username: str | None = None):
     can't use `web_app` keyboard buttons (Telegram raises
     Button_type_invalid), so they get an inline button to the direct-link
     Mini App (t.me/<bot>?startapp), which needs the Main Mini App set in
-    BotFather. Returns None when WEBHOOK_URL isn't configured.
+    BotFather. Returns None when no Mini App URL is configured.
     """
-    if not WEBHOOK_URL or not chat:
+    if not MINIAPP_URL or not chat:
         return None
 
     if chat.type == "private":
         return ReplyKeyboardMarkup(
-            [[KeyboardButton("📅 View Calendar", web_app=WebAppInfo(url=f"{WEBHOOK_URL}/"))]],
+            [[KeyboardButton("📅 View Calendar", web_app=WebAppInfo(url=f"{MINIAPP_URL}/"))]],
             resize_keyboard=True,
             is_persistent=True,
         )
@@ -154,7 +154,7 @@ def _calendar_keyboard(chat, bot_username: str | None = None):
     if bot_username:
         link = f"https://t.me/{bot_username}?startapp={encode_chat_param(chat.id)}"
     else:
-        link = f"{WEBHOOK_URL}/"
+        link = f"{MINIAPP_URL}/"
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("📅 View Calendar", url=link),
     ]])
@@ -612,15 +612,15 @@ async def handle_app_command(
     if not update.message:
         return
 
-    if not WEBHOOK_URL:
+    if not MINIAPP_URL:
         await update.message.reply_text(
-            "Mini App requires WEBHOOK_URL to be configured "
-            "(set it to your public HTTPS URL)."
+            "Mini App requires MINIAPP_URL (or WEBHOOK_URL) to be configured "
+            "(set it to the frontend's public HTTPS URL)."
         )
         return
 
-    # Ensure WEBHOOK_URL starts with https:// or http:// (Telegram WebAppInfo requires https://, but let's be robust)
-    base_url = WEBHOOK_URL
+    # Telegram WebAppInfo requires an https:// URL; be robust about the scheme.
+    base_url = MINIAPP_URL
     if not base_url.startswith("https://") and not base_url.startswith("http://"):
         base_url = f"https://{base_url}"
 
@@ -666,15 +666,15 @@ async def handle_admin_command(
     if not update.message:
         return
 
-    if not WEBHOOK_URL:
+    if not MINIAPP_URL:
         await update.message.reply_text(
-            "Mini App requires WEBHOOK_URL to be configured "
-            "(set it to your public HTTPS URL)."
+            "Mini App requires MINIAPP_URL (or WEBHOOK_URL) to be configured "
+            "(set it to the frontend's public HTTPS URL)."
         )
         return
 
-    # Ensure WEBHOOK_URL starts with https:// or http:// (Telegram WebAppInfo requires https://)
-    base_url = WEBHOOK_URL
+    # Telegram WebAppInfo requires an https:// URL; be robust about the scheme.
+    base_url = MINIAPP_URL
     if not base_url.startswith("https://") and not base_url.startswith("http://"):
         base_url = f"https://{base_url}"
 

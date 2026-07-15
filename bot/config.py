@@ -16,7 +16,7 @@ if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN environment variable is required")
 
 # Webhook Configuration
-# If WEBHOOK_URL is set, the bot runs in webhook mode (production / Railway).
+# If WEBHOOK_URL is set, the bot runs in webhook mode (production / Render).
 # If empty, main.py falls back to long polling for local development.
 #
 # Render injects RENDER_EXTERNAL_URL (https://<service>.onrender.com) at
@@ -29,6 +29,17 @@ WEBHOOK_URL = (
 ).rstrip("/")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 WEBHOOK_PATH = "/webhook"
+
+# Mini App URL — where the frontend actually lives (e.g. the Vercel app).
+# All Telegram web_app buttons open this. Falls back to WEBHOOK_URL for
+# setups that serve the frontend from the same process as the bot; on a
+# split deployment (backend on Render, frontend on Vercel) leaving this
+# unset makes the buttons open the backend, which 404s inside Telegram
+# ("This page couldn't load").
+MINIAPP_URL = (
+    os.getenv("MINIAPP_URL", "").strip().rstrip("/")
+    or WEBHOOK_URL
+)
 
 # Admin bootstrap: comma-separated Telegram user IDs that get ADMIN role on first run
 _admin_raw = os.getenv("ADMIN_USER_IDS", "").strip()

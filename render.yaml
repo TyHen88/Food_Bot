@@ -28,6 +28,16 @@ services:
       - key: WEBHOOK_SECRET
         generateValue: true
 
+      # Where the Mini App frontend lives — all Telegram web_app buttons
+      # open this URL. Without it they'd open this backend, which has no
+      # frontend and 404s ("This page couldn't load" inside Telegram).
+      - key: MINIAPP_URL
+        value: "https://wefood-pi.vercel.app"
+
+      # Browser origins allowed to call /api/* (the frontend + local dev).
+      - key: CORS_ORIGINS
+        value: "https://wefood-pi.vercel.app,http://localhost:3000"
+
       # main.py falls back to RENDER_EXTERNAL_URL when this is empty, so the
       # first deploy self-registers its webhook. Set it explicitly only to
       # point at a custom domain.
