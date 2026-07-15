@@ -134,7 +134,12 @@ async def list_schedules(
     if chat_id:
         wanted = str(chat_id).strip()
         rows = [r for r in rows if _targets_chat(r, wanted)]
-    return rows
+    # Sheets stores booleans as "TRUE"/"FALSE" strings; hand the client a real
+    # bool so a "FALSE" string can't read as truthy in JS.
+    return [
+        {**r, "is_active": str(r.get("is_active", "")).strip().upper() == "TRUE"}
+        for r in rows
+    ]
 
 
 class ImageUpload(BaseModel):

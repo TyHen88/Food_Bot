@@ -154,6 +154,44 @@ def _format_card(
     return "\n".join(lines)
 
 
+def _format_person(
+    order_items: Dict[str, int],
+    order_name: str,
+    user_selections: Optional[Dict[int, Dict[str, Any]]],
+) -> str:
+    """Style 4 — grouped by person, so the payer can collect per member."""
+    sep = "━" * 22
+    lines = [
+        f"🛒 Name: {order_name}",
+        sep,
+        "👥 Order by member",
+    ]
+
+    people = 0
+    if user_selections:
+        for user_id, user_data in user_selections.items():
+            items = [i for i in user_data.get("selections", []) if i in order_items]
+            if not items:
+                continue
+            people += 1
+            lines.append(f"   👤 {user_data.get('name', f'User{user_id}')}")
+            for item in items:
+                lines.append(f"      • {item}")
+
+    if not people:
+        # No voter detail available — fall back to the flat item list.
+        for idx, (item, qty) in enumerate(order_items.items(), start=1):
+            lines.append(f"   {idx}) {item} × {qty}")
+
+    lines.append(sep)
+    total = sum(order_items.values())
+    summary = f"Total: {total} dish{'es' if total != 1 else ''}"
+    if people:
+        summary += f" · {people} {'people' if people != 1 else 'person'}"
+    lines.append(summary)
+    return "\n".join(lines)
+
+
 _STYLE_DISPATCH = {
     "1": _format_classic,
     "classic": _format_classic,
@@ -161,6 +199,8 @@ _STYLE_DISPATCH = {
     "compact": _format_compact,
     "3": _format_card,
     "card": _format_card,
+    "4": _format_person,
+    "person": _format_person,
 }
 
 
@@ -175,6 +215,7 @@ def format_order_summary(
         "1" / "classic" — receipt-style, two sections (default)
         "2" / "compact" — chat-friendly single list
         "3" / "card"    — boxed header + per-item cards
+        "4" / "person"  — grouped by member (per-person collection)
     Unknown values fall back to "1".
     """
     if not order_items:
