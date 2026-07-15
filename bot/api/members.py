@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, Query
 
 from ..sheets import repo
 from ..sheets.client import is_configured
-from .auth import caller_user_id, require_member
+from .auth import caller_chat_id, caller_user_id, require_member
 
 router = APIRouter(prefix="/members", tags=["members"])
 
@@ -125,6 +125,18 @@ async def list_members(
 
     users = await repo.list_all("user")
     votes = await repo.list_all("vote")
+
+    # Scope to the launch chat: explicit ?chat_id, else the chat baked into
+    # the signed initData (attachment-menu `chat` or startapp start_param).
+    auth_chat = caller_chat_id(auth)
+    if not chat_id:
+        chat_id = auth_chat
+    # Members may only request chats they belong to (the signed launch chat
+    # always qualifies); otherwise fall back to their own chats below.
+    if chat_id and not auth.get("is_admin"):
+        wanted = str(chat_id).strip()
+        if wanted != auth_chat and wanted not in await user_chats(caller_user_id(auth)):
+            chat_id = None
 
     # `allowed` is the set of user_ids the caller is permitted to see. It is
     # never None — we always scope, so a user can't see members of a group

@@ -14,7 +14,7 @@ from pydantic import BaseModel, field_validator
 
 from ..sheets import events, repo
 from ..sheets.client import is_configured
-from .auth import require_admin, require_member
+from .auth import caller_chat_id, require_admin, require_member
 
 
 def _targets_chat(row: Dict[str, Any], chat_id: str) -> bool:
@@ -125,11 +125,10 @@ async def list_schedules(
     if not is_configured():
         return []
 
-    # Automatically restrict to the current Telegram group if the WebApp is opened inside a chat
+    # Scope to the launch chat: explicit ?chat_id, else the chat baked into
+    # the signed initData (attachment-menu `chat` or startapp start_param).
     if not chat_id:
-        chat = auth.get("chat") or {}
-        if chat.get("id"):
-            chat_id = str(chat.get("id")).strip()
+        chat_id = caller_chat_id(auth)
 
     rows = await repo.list_all("schedule")
     if chat_id:

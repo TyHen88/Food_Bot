@@ -17,6 +17,6 @@ spreadsheet**, not the in-memory fallback. `DEV_BYPASS_AUTH` is also active
 **How to apply:** To exercise data-layer logic, test the pure functions
 (`orders._build_item_json`, `orders._shape_order`, `_parse_items`) with
 hand-built dict rows — do NOT call the `record`/`snapshot`/`upsert` paths unless
-you intend to mutate the real sheet. The schema/CLAUDE.md still describe an
-older in-memory-only design; the repo now has a full Sheets backend
-(`bot/sheets/`, `bot/api/`) and a Mini App (`frontend/`). See [[order-calendar-redesign]].
+you intend to mutate the real sheet. The repo has a full Sheets backend
+(`bot/sheets/`, `bot/api/`) and a Mini App (`../frontend/`, Next.js); CLAUDE.md
+(root + backend) was updated 2026-07-15 to describe this. See [[order-calendar-redesign]].

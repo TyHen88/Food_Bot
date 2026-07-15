@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from ..sheets import orders as sheets_orders
 from ..sheets import repo
 from ..sheets.client import is_configured
-from .auth import caller_user_id, require_admin, require_member
+from .auth import caller_chat_id, caller_user_id, require_admin, require_member
 from .members import user_chats
 
 router = APIRouter(prefix="/orders", tags=["orders"])
@@ -151,15 +151,21 @@ async def list_orders(
     if date and not (date_from or date_to):
         date_from = date_to = date
 
-    # Automatically restrict to the current Telegram group if the WebApp is opened inside a chat
+    # Scope to the launch chat: explicit ?chat_id, else the chat baked into
+    # the signed initData (attachment-menu `chat` or startapp start_param).
+    auth_chat = caller_chat_id(auth)
     if not chat_id:
-        chat = auth.get("chat") or {}
-        if chat.get("id"):
-            chat_id = str(chat.get("id")).strip()
+        chat_id = auth_chat
 
     rows = await sheets_orders.list_in_range(date_from, date_to)
     if chat_id:
         wanted = str(chat_id).strip()
+        # Members may only request chats they belong to (the signed launch
+        # chat always qualifies); anything else returns nothing rather than
+        # leaking another group's orders.
+        if not auth.get("is_admin") and wanted != auth_chat:
+            if wanted not in await user_chats(caller_user_id(auth)):
+                return []
         rows = [r for r in rows if str(r.get("chat_id", "")).strip() == wanted]
     elif not auth.get("is_admin"):
         my_chats = await user_chats(caller_user_id(auth))

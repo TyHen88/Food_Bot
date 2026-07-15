@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import time
 from typing import Optional
 from urllib.parse import parse_qsl
@@ -28,6 +29,28 @@ def caller_user_id(auth: dict) -> str:
     """The Telegram user id of the verified caller, as a string ("" if absent)."""
     uid = (auth.get("user") or {}).get("id")
     return "" if uid is None else str(uid).strip()
+
+
+_START_PARAM_RE = re.compile(r"^([gc])(\d+)$")
+
+
+def caller_chat_id(auth: dict) -> str:
+    """The chat id this Mini App launch is scoped to, taken from the SIGNED
+    initData — trustworthy, unlike a client-supplied query param.
+
+    Two launch paths provide it: the `chat` object (attachment-menu launches)
+    or `start_param` written by encode_chat_param() in bot/handlers.py for
+    t.me/<bot>?startapp=<param> links ("g123" → "-123", "c123" → "123").
+    Returns "" when the launch has no chat context (bot DM, dev bypass).
+    """
+    chat = auth.get("chat") or {}
+    if chat.get("id") is not None:
+        return str(chat["id"]).strip()
+    m = _START_PARAM_RE.match(str(auth.get("start_param") or "").strip())
+    if m:
+        sign, digits = m.groups()
+        return f"-{digits}" if sign == "g" else digits
+    return ""
 
 
 def _dev_bypass_active() -> bool:
