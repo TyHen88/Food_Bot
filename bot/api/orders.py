@@ -155,7 +155,7 @@ async def list_orders(
     if chat_id:
         wanted = str(chat_id).strip()
         rows = [r for r in rows if str(r.get("chat_id", "")).strip() == wanted]
-    else:
+    elif not auth.get("is_admin"):
         my_chats = await user_chats(caller_user_id(auth))
         rows = [r for r in rows if str(r.get("chat_id", "")).strip() in my_chats]
     if not rows:
