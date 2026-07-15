@@ -119,11 +119,18 @@ def _require_configured() -> None:
 @router.get("")
 async def list_schedules(
     chat_id: Optional[str] = Query(None, description="Restrict to schedules that fire for this chat."),
-    _: dict = Depends(require_member),
+    auth: dict = Depends(require_member),
 ) -> List[Dict[str, Any]]:
     # Read access for any verified user; mutation stays admin-only.
     if not is_configured():
         return []
+
+    # Automatically restrict to the current Telegram group if the WebApp is opened inside a chat
+    if not chat_id:
+        chat = auth.get("chat") or {}
+        if chat.get("id"):
+            chat_id = str(chat.get("id")).strip()
+
     rows = await repo.list_all("schedule")
     if chat_id:
         wanted = str(chat_id).strip()
@@ -254,6 +261,7 @@ async def create_schedule(
 
 
 @router.put("/{schedule_id}")
+@router.patch("/{schedule_id}")
 async def update_schedule(
     schedule_id: str,
     body: ScheduleBody,

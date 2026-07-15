@@ -251,3 +251,22 @@ SEED_SCHEDULE: List[Dict[str, str]] = [
      "is_active": "TRUE",
      "created_at": ""},
 ]
+
+
+# Default templates seeded if `template` tab is empty.
+SEED_TEMPLATE: List[Dict[str, str]] = [
+    {"template_id": "lunch_menu_tpl",
+     "name": "Lunch Menu",
+     "question": "តើបងៗចង់ញ៉ាំអ្វីសម្រាប់ថ្ងៃត្រង់?😋🍴",
+     "options": '["បាយសាច់ជ្រូកចៀន","បាយទាសាសាវ","បាយមាន់ដុត","មីទាខ្វៃ"]',
+     "is_active": "TRUE",
+     "created_at": "2026-07-15T00:00:00+07:00"},
+
+    {"template_id": "drinks_menu_tpl",
+     "name": "Drinks",
+     "question": "ចង់កុម្ម៉ង់ភេសជ្ជៈអ្វីខ្លះបងៗ?🥤☕️",
+     "options": '["កាហ្វេទឹកដោះគោទឹកកក","តែបៃតងទឹកដោះគោ","តែក្រូចឆ្មា","ទឹកក្រូចច្របាច់"]',
+     "is_active": "TRUE",
+     "created_at": "2026-07-15T00:00:00+07:00"},
+]
+

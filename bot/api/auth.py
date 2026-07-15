@@ -89,6 +89,14 @@ def _verify_signature(init_data: str) -> Optional[dict]:
         except json.JSONDecodeError:
             return None
 
+    # Decode the chat JSON payload for convenience.
+    chat_raw = parsed.get("chat")
+    if chat_raw:
+        try:
+            parsed["chat"] = json.loads(chat_raw)
+        except json.JSONDecodeError:
+            pass
+
     return parsed
 
 

@@ -25,6 +25,7 @@ from .schema import (
     SEED_COMMON_CODE,
     SEED_SCHEDULE,
     SEED_SETTING,
+    SEED_TEMPLATE,
     TABS,
 )
 
@@ -92,6 +93,7 @@ async def seed_defaults() -> None:
     await run_sync(_seed_tab_if_empty_sync, "common_code", SEED_COMMON_CODE)
     await run_sync(_seed_tab_if_empty_sync, "setting", SEED_SETTING)
     await run_sync(_seed_tab_if_empty_sync, "schedule", SEED_SCHEDULE)
+    await run_sync(_seed_tab_if_empty_sync, "template", SEED_TEMPLATE)
 
 
 async def bootstrap() -> None:

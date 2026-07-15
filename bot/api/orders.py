@@ -151,6 +151,12 @@ async def list_orders(
     if date and not (date_from or date_to):
         date_from = date_to = date
 
+    # Automatically restrict to the current Telegram group if the WebApp is opened inside a chat
+    if not chat_id:
+        chat = auth.get("chat") or {}
+        if chat.get("id"):
+            chat_id = str(chat.get("id")).strip()
+
     rows = await sheets_orders.list_in_range(date_from, date_to)
     if chat_id:
         wanted = str(chat_id).strip()
