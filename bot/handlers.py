@@ -53,6 +53,8 @@ from .sheets import payers as sheets_payers
 from .sheets import repo as sheets_repo
 from .sheets import settings as sheets_settings
 from .sheets.client import is_configured
+import json
+from . import ai
 from .utils import format_order_summary, is_food_menu_text, with_retry
 
 logger = logging.getLogger(__name__)
@@ -693,6 +695,105 @@ async def handle_admin_command(
         )
 
 
+async def handle_ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """`/ai <query>` — Ask AI about personal order history or general questions."""
+    if not update.message:
+        return
+
+    # Extract the user prompt
+    parts = update.message.text.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        await update.message.reply_text(
+            "Usage: /ai <your question>\n"
+            "Example: /ai please count my order start from 2026-may-01 to today"
+        )
+        return
+
+    user_query = parts[1].strip()
+    user = update.effective_user
+    
+    # Notify that bot is processing
+    processing_msg = await update.message.reply_text("Thinking... 🤖")
+
+    try:
+        from datetime import datetime
+        # Get today's date in local timezone or fall back to UTC
+        from zoneinfo import ZoneInfo
+        from .config import TIMEZONE
+        try:
+            tz = ZoneInfo(TIMEZONE)
+            today_str = datetime.now(tz).strftime("%Y-%m-%d")
+        except Exception:
+            today_str = datetime.now().strftime("%Y-%m-%d")
+
+        # Step 1: Parse intent and dates
+        intent_info = await ai.parse_query_intent(user_query, today_str)
+        q_type = intent_info.get("type", "external")
+        start_date = intent_info.get("start_date")
+        end_date = intent_info.get("end_date")
+
+        order_data = []
+        user_info = {
+            "id": user.id,
+            "username": user.username or "",
+            "full_name": user.full_name or f"User{user.id}"
+        }
+
+        # Step 2: Fetch database if internal
+        if q_type == "internal":
+            # Default fallback if dates were not resolved by LLM
+            if not start_date:
+                # If no start date specified, default to May 1st, 2026 as per user example
+                start_date = "2026-05-01"
+            if not end_date:
+                end_date = today_str
+
+            logger.info(f"Querying order sheet for range: {start_date} to {end_date}")
+            all_orders = await sheets_orders.list_in_range(start_date, end_date)
+            
+            # Step 3: Filter strictly to user's orders
+            for o in all_orders:
+                items = []
+                try:
+                    items = json.loads(o.get("item", "[]"))
+                except Exception:
+                    pass
+                
+                # Check each item in the order snapshot
+                for it in items:
+                    it_uid = it.get("user_id")
+                    it_name = it.get("name")
+                    # Match by user_id or username or full_name
+                    is_match = False
+                    if it_uid and str(it_uid) == str(user.id):
+                        is_match = True
+                    elif user.username and it_name == user.username:
+                        is_match = True
+                    elif it_name == user.full_name:
+                        is_match = True
+
+                    if is_match:
+                        order_data.append({
+                            "order_date": o.get("order_date"),
+                            "item_name": it.get("item_name"),
+                            "qty": it.get("qty", 1)
+                        })
+
+        # Step 4: Generate final response
+        reply_text = await ai.generate_chat_response(
+            user_query=user_query,
+            query_type=q_type,
+            order_data=order_data,
+            user_info=user_info
+        )
+        
+        await processing_msg.edit_text(reply_text, parse_mode="Markdown")
+
+    except Exception as e:
+        logger.error(f"Error in handle_ai_command: {e}", exc_info=True)
+        await processing_msg.edit_text(f"Sorry, I encountered an error processing your AI query: {str(e)}")
+
+
 async def handle_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Catch-all so a handler exception is logged, not left unhandled."""
     logger.error("Unhandled exception while processing update", exc_info=context.error)
@@ -709,6 +810,7 @@ def setup_handlers(application) -> None:
     application.add_handler(CommandHandler("vongsa", handle_pay_command))
     application.add_handler(CommandHandler("ty", handle_ty_command))
     application.add_handler(CommandHandler("app", handle_app_command))
+    application.add_handler(CommandHandler("ai", handle_ai_command))
 
     # Admin commands (decorated with @admin_only)
     application.add_handler(CommandHandler("admin", handle_admin_command))

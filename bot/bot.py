@@ -33,6 +33,7 @@ BOT_COMMANDS = [
     BotCommand("unsubscribe", "Unsubscribe this chat from reminders"),
     BotCommand("vongsa", "Pay Vongsa Hourt (KHQR)"),
     BotCommand("ty", "Pay Ty Hen (KHQR)"),
+    BotCommand("ai", "Ask AI about order history or general questions"),
     # Admin-only (decorator rejects non-admins)
     # NOTE: /admin is intentionally NOT listed here — it still works if typed
     # (handler stays registered), but it's hidden from the command menu.

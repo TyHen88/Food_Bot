@@ -61,6 +61,11 @@ CORS_ORIGINS: list[str] = [o.strip() for o in _cors_raw.split(",") if o.strip()]
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "").strip()
 GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON", "").strip()
 
+# Ollama API Integration
+OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "https://ollama.com/api/chat").strip()
+OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "").strip()
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gpt-oss:120b").strip()
+
 # Logging Configuration
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 LOG_FILE = os.getenv("LOG_FILE", "bot.log")
