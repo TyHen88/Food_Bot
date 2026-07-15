@@ -134,12 +134,19 @@ async def list_schedules(
     if chat_id:
         wanted = str(chat_id).strip()
         rows = [r for r in rows if _targets_chat(r, wanted)]
-    # Sheets stores booleans as "TRUE"/"FALSE" strings; hand the client a real
-    # bool so a "FALSE" string can't read as truthy in JS.
-    return [
-        {**r, "is_active": str(r.get("is_active", "")).strip().upper() == "TRUE"}
-        for r in rows
-    ]
+    # Normalise the row types for the client: gspread numericises cells, so a
+    # target_chat_ids like "-1002308775160" comes back as an int — calling a
+    # string method on it crashed the Mini App's schedule page. Booleans are
+    # stored as "TRUE"/"FALSE" strings; hand back a real bool.
+    def _shape(r: Dict[str, Any]) -> Dict[str, Any]:
+        out = {
+            k: ("" if v is None else str(v))
+            for k, v in r.items()
+        }
+        out["is_active"] = str(r.get("is_active", "")).strip().upper() == "TRUE"
+        return out
+
+    return [_shape(r) for r in rows]
 
 
 class ImageUpload(BaseModel):
