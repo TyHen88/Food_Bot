@@ -13,7 +13,11 @@ Any verified Telegram user may call this (``require_member``):
       are trimmed to that member's own dishes.
 """
 
+import base64
 import json
+import logging
+import mimetypes
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status, Request
@@ -27,6 +31,7 @@ from .auth import caller_chat_id, caller_user_id, require_admin, require_member
 from .members import user_chats
 
 router = APIRouter(prefix="/orders", tags=["orders"])
+logger = logging.getLogger(__name__)
 
 
 def _parse_items(raw: Any) -> List[Dict[str, Any]]:
@@ -240,6 +245,92 @@ def _clean_item_name(name: Any) -> str:
     return re.sub(r"^[\s\-•*·]+", "", str(name or "")).strip()
 
 
+_ASSETS_DIR = Path(__file__).parent.parent.parent / "assets"
+
+
+def payer_qr_path(qr_filename: Any) -> Optional[Path]:
+    """Resolve a payer row's qr_filename inside assets/, or None when unset
+    or missing. Path().name strips any directory parts, so a sheet value can
+    never escape the assets folder."""
+    name = Path(str(qr_filename or "").strip()).name
+    if not name:
+        return None
+    path = _ASSETS_DIR / name
+    return path if path.is_file() else None
+
+
+# Telegram caps photo captions at 1024 chars (messages get 4096).
+_CAPTION_LIMIT = 1024
+
+
+def _payer_qr_source(payer: Optional[Dict[str, Any]]) -> Union[Path, str, None]:
+    """What to feed send_photo for this payer's QR: an assets/ Path, a
+    Telegram file_id string (from the Settings upload), or None."""
+    value = str((payer or {}).get("qr_filename") or "").strip()
+    return payer_qr_path(value) or (value or None)
+
+
+async def payer_qr_data_uri(bot, qr_value: Any) -> str:
+    """The payer's QR as a data URI for the Mini App: reads assets/ files
+    directly, downloads Telegram file_ids via the bot. "" when unset or
+    unreadable."""
+    value = str(qr_value or "").strip()
+    if not value:
+        return ""
+    path = payer_qr_path(value)
+    if path:
+        try:
+            data = path.read_bytes()
+        except OSError:
+            logger.warning(f"Payer QR asset not readable: {path}")
+            return ""
+        mime = mimetypes.guess_type(path.name)[0] or "image/png"
+        return f"data:{mime};base64,{base64.b64encode(data).decode()}"
+    try:
+        tg_file = await bot.get_file(value)
+        data = bytes(await tg_file.download_as_bytearray())
+    except Exception:
+        logger.warning(f"Payer QR file_id not downloadable: {value[:24]}...")
+        return ""
+    return "data:image/jpeg;base64," + base64.b64encode(data).decode()
+
+
+async def send_invoice_message(bot, chat_id: int, text: str,
+                               payer: Optional[Dict[str, Any]]) -> None:
+    """Send an invoice to the group chat, attaching the payer's QR image
+    when their payer row has one (assets/ filename or uploaded Telegram
+    file_id). Short invoices become a single photo with the invoice as
+    caption; longer ones are sent as text followed by the QR photo so
+    nothing gets truncated. A broken QR never blocks the invoice text."""
+    qr = _payer_qr_source(payer)
+
+    async def _send_qr(caption: str, parse_mode: Optional[str] = None) -> None:
+        if isinstance(qr, Path):
+            with qr.open("rb") as fh:
+                await bot.send_photo(chat_id=chat_id, photo=fh,
+                                     caption=caption, parse_mode=parse_mode)
+        else:
+            await bot.send_photo(chat_id=chat_id, photo=qr,
+                                 caption=caption, parse_mode=parse_mode)
+
+    if qr and len(text) <= _CAPTION_LIMIT:
+        try:
+            await _send_qr(text, "HTML")
+            return
+        except Exception:
+            logger.warning("QR-caption send failed; falling back to text",
+                           exc_info=True)
+
+    await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+    if qr:
+        payer_name = str((payer or {}).get("full_name") or "").strip()
+        try:
+            await _send_qr(f"💳 Scan KHQR to pay {payer_name}".strip())
+        except Exception:
+            logger.warning("QR photo attach failed (invoice text was sent)",
+                           exc_info=True)
+
+
 class InvoiceItemPrice(BaseModel):
     item_name: str
     price: float
@@ -338,11 +429,13 @@ async def generate_order_invoice(
     # section; merge duplicate dishes within a person, summing quantities.
     grouped: Dict[str, Dict[str, Dict[str, Any]]] = {}
     display_names: Dict[str, str] = {}
+    uid_of_key: Dict[str, str] = {}
     for it in items:
         uid = str(it.get("user_id") or "").strip()
         user_name = str(it.get("name") or "Guest").strip() or "Guest"
         key = uid or user_name
         display_names[key] = user_name  # newest name wins
+        uid_of_key[key] = uid
 
         raw_name = str(it.get("item_name") or "Unknown")
         item_name = _clean_item_name(raw_name) or "Unknown"
@@ -363,12 +456,13 @@ async def generate_order_invoice(
     payer_id = row.get("user_id")
     khqr_text = ""
     payer_full_name = row.get("username") or "the Payer"
+    payer_row = None
     if payer_id:
         from ..sheets import payers as sheets_payers
-        payer_info = await sheets_payers.get(payer_id)
-        if payer_info:
-            khqr_text = payer_info.get("khqr_text") or ""
-            payer_full_name = payer_info.get("full_name") or payer_full_name
+        payer_row = await sheets_payers.get(payer_id)
+        if payer_row:
+            khqr_text = payer_row.get("khqr_text") or ""
+            payer_full_name = payer_row.get("full_name") or payer_full_name
 
     invoice_text = _build_invoice_text(
         str(row.get("order_date") or ""),
@@ -378,17 +472,15 @@ async def generate_order_invoice(
     )
     grand_total = sum(i["cost"] for items in user_orders.values() for i in items)
 
-    # Send message to Telegram Chat
+    # Send to the Telegram chat, attaching the payer's QR image when set.
     chat_id = row.get("chat_id")
     if chat_id:
         try:
             import logging
             bot_logger = logging.getLogger("bot.api.orders")
             application = request.app.state.application
-            await application.bot.send_message(
-                chat_id=int(chat_id),
-                text=invoice_text,
-                parse_mode="HTML"
+            await send_invoice_message(
+                application.bot, int(chat_id), invoice_text, payer_row,
             )
         except Exception as e:
             bot_logger.error(f"Failed to send Telegram invoice: {e}", exc_info=True)
@@ -400,13 +492,17 @@ async def generate_order_invoice(
     # Persist the invoice so it shows up in the Mini App's Invoices page
     # (and the order flips to "View Invoice"). Failure to save must not
     # undo a successful send — log and keep going.
+    # Persisted breakdown is per Telegram user (not per display name):
+    # user_id lets /api/invoices compute each caller's own share even when
+    # their display name changes between orders.
     details = [
         {
-            "user_name": user_name,
-            "items": user_items,
-            "subtotal": round(sum(i["cost"] for i in user_items), 2),
+            "user_id": uid_of_key.get(key, ""),
+            "user_name": display_names[key],
+            "items": list(dishes.values()),
+            "subtotal": round(sum(i["cost"] for i in dishes.values()), 2),
         }
-        for user_name, user_items in user_orders.items()
+        for key, dishes in grouped.items()
     ]
     try:
         await sheets_invoices.save_sent(

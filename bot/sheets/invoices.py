@@ -5,7 +5,8 @@ One row per order (PK invoice_id = order_id). Saving again for the same
 order (a re-send, or sending with updated prices) upserts the row and
 bumps `sent_count`. `details` stores the per-person breakdown as JSON:
 
-    [{"user_name": "...",
+    [{"user_id": "123",          # Telegram id; "" on legacy/guest entries
+      "user_name": "...",
       "items": [{"item_name": "...", "qty": 2, "price": 1.5, "cost": 3.0}],
       "subtotal": 3.0}]
 """

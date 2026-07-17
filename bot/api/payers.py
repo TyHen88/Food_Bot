@@ -8,13 +8,14 @@ QR image filename, or correct the display name. Admin-only.
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
 from ..sheets import payers as sheets_payers
 from ..sheets import repo
 from ..sheets.client import is_configured
 from .auth import require_admin
+from .orders import payer_qr_data_uri
 
 router = APIRouter(prefix="/payers", tags=["payers"])
 
@@ -31,6 +32,21 @@ async def list_payers(_: dict = Depends(require_admin)) -> List[Dict[str, Any]]:
     # Most recent payers first.
     rows.sort(key=lambda r: str(r.get("last_paid_at") or ""), reverse=True)
     return rows
+
+
+@router.get("/{user_id}/qr")
+async def payer_qr_preview(
+    user_id: str,
+    request: Request,
+    _: dict = Depends(require_admin),
+) -> Dict[str, str]:
+    """The payer's current QR image as a data URI (assets/ filename or an
+    uploaded Telegram file_id) — previewed in the Settings edit modal."""
+    payer = await sheets_payers.get(user_id)
+    if not payer:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payer not found")
+    bot = request.app.state.application.bot
+    return {"qr": await payer_qr_data_uri(bot, payer.get("qr_filename"))}
 
 
 @router.put("/{user_id}")

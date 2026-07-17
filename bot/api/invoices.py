@@ -16,7 +16,7 @@ from ..sheets import invoices as sheets_invoices
 from ..sheets import payers as sheets_payers
 from .auth import caller_chat_id, caller_user_id, require_admin, require_member
 from .members import user_chats
-from .orders import _build_invoice_text, _chat_titles
+from .orders import _build_invoice_text, _chat_titles, payer_qr_data_uri, send_invoice_message
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,38 @@ async def _allowed_chats(auth: dict) -> Optional[set]:
     if launch:
         chats.add(launch)
     return chats
+
+
+def _caller_names(auth: dict) -> set:
+    """Lowercased display-name candidates for the caller, used to match old
+    invoice details that predate the per-entry user_id field."""
+    u = auth.get("user") or {}
+    first = str(u.get("first_name") or "").strip()
+    last = str(u.get("last_name") or "").strip()
+    return {
+        n.lower()
+        for n in (u.get("username") or "", first, f"{first} {last}".strip())
+        if n
+    }
+
+
+def _my_amount(details: List[Dict[str, Any]], caller_id: str, caller_names: set) -> float:
+    """Sum of the caller's per-person subtotals in one invoice's details.
+    Entries carrying user_id match on it; legacy entries fall back to a
+    display-name match."""
+    total = 0.0
+    for d in details or []:
+        try:
+            sub = float(d.get("subtotal") or 0)
+        except (TypeError, ValueError):
+            sub = 0.0
+        did = str(d.get("user_id") or "").strip()
+        if did:
+            if caller_id and did == caller_id:
+                total += sub
+        elif str(d.get("user_name") or "").strip().lower() in caller_names:
+            total += sub
+    return round(total, 2)
 
 
 @router.get("")
@@ -56,12 +88,15 @@ async def list_invoices(
         rows = [r for r in rows if r["chat_id"] in allowed]
 
     titles = await _chat_titles()
+    caller_id = caller_user_id(auth)
+    names = _caller_names(auth)
     out = []
     for r in rows:
         out.append({
             **{k: v for k, v in r.items() if k != "details"},
             "chat_title": titles.get(r["chat_id"], ""),
             "person_count": len(r["details"]),
+            "my_amount": _my_amount(r["details"], caller_id, names),
         })
     out.sort(key=lambda r: (r.get("order_date") or "", r.get("last_sent_at") or ""), reverse=True)
     return out
@@ -80,12 +115,24 @@ async def _get_visible_invoice(invoice_id: str, auth: dict) -> Dict[str, Any]:
 @router.get("/{invoice_id}")
 async def get_invoice(
     invoice_id: str,
+    request: Request,
     auth: dict = Depends(require_member),
 ) -> Dict[str, Any]:
-    """Full invoice incl. per-person breakdown. Any member of the chat."""
+    """Full invoice incl. per-person breakdown and the payer's QR (image as
+    data URI + raw KHQR payload) so the viewer can pay. Any member of the chat."""
     inv = await _get_visible_invoice(invoice_id, auth)
     titles = await _chat_titles()
-    return {**inv, "chat_title": titles.get(inv["chat_id"], "")}
+    out = {**inv, "chat_title": titles.get(inv["chat_id"], "")}
+
+    if inv["payer_user_id"]:
+        payer = await sheets_payers.get(inv["payer_user_id"])
+        if payer:
+            out["payer_khqr_text"] = str(payer.get("khqr_text") or "")
+            bot = request.app.state.application.bot
+            qr = await payer_qr_data_uri(bot, payer.get("qr_filename"))
+            if qr:
+                out["payer_qr_image"] = qr
+    return out
 
 
 @router.post("/{invoice_id}/resend")
@@ -106,17 +153,18 @@ async def resend_invoice(
     # payer who added their QR after the first send still gets it included.
     user_orders = {d.get("user_name", "Guest"): d.get("items", []) for d in inv["details"]}
     khqr_text = ""
+    payer_row = None
     if inv["payer_user_id"]:
-        payer_info = await sheets_payers.get(inv["payer_user_id"])
-        if payer_info:
-            khqr_text = payer_info.get("khqr_text") or ""
+        payer_row = await sheets_payers.get(inv["payer_user_id"])
+        if payer_row:
+            khqr_text = payer_row.get("khqr_text") or ""
 
     text = _build_invoice_text(inv["order_date"], user_orders, inv["payer_name"], khqr_text)
 
     try:
         application = request.app.state.application
-        await application.bot.send_message(
-            chat_id=int(inv["chat_id"]), text=text, parse_mode="HTML",
+        await send_invoice_message(
+            application.bot, int(inv["chat_id"]), text, payer_row,
         )
     except Exception as e:
         logger.error(f"Failed to resend invoice {invoice_id}: {e}", exc_info=True)
