@@ -12,8 +12,11 @@ long polling (the legacy mode), so you can iterate without ngrok.
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
+import httpx
 from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -23,6 +26,10 @@ from bot import build_application
 from bot.api import api_router
 from bot.config import (
     CORS_ORIGINS,
+    KEEPALIVE_END_HOUR,
+    KEEPALIVE_INTERVAL,
+    KEEPALIVE_START_HOUR,
+    TIMEZONE,
     WEBHOOK_PATH,
     WEBHOOK_SECRET,
     WEBHOOK_URL,
@@ -78,6 +85,31 @@ async def _webhook_watchdog(application, expected_url: str, secret_token: str | 
             logger.warning(f"Webhook watchdog check failed: {e}")
 
 
+async def _keepalive_loop(base_url: str) -> None:
+    """Self-ping /health during the daily ordering window so Render's free
+    tier never sees 15 idle minutes and never spins the instance down
+    (spin-down would also silence the APScheduler reminder/QR jobs).
+
+    This only works while the process is running — it cannot wake an
+    already-sleeping instance, so the first wake-up of the day must come
+    from outside (an external cron ping just before the window opens, or
+    any Telegram message hitting the webhook).
+    """
+    tz = ZoneInfo(TIMEZONE)
+    async with httpx.AsyncClient(timeout=30) as client:
+        while True:
+            try:
+                now = datetime.now(tz)
+                if KEEPALIVE_START_HOUR <= now.hour < KEEPALIVE_END_HOUR:
+                    await client.get(f"{base_url}/health")
+                    logger.info("Keep-alive: pinged /health")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"Keep-alive ping failed: {e}")
+            await asyncio.sleep(KEEPALIVE_INTERVAL)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Start the PTB application alongside FastAPI; tear it down on shutdown."""
@@ -109,6 +141,7 @@ async def lifespan(app: FastAPI):
 
     polling_active = False
     watchdog_task = None
+    keepalive_task = None
     if WEBHOOK_URL:
         full_url = f"{WEBHOOK_URL}{WEBHOOK_PATH}"
         kwargs = {"url": full_url, "drop_pending_updates": True}
@@ -121,6 +154,9 @@ async def lifespan(app: FastAPI):
         watchdog_task = asyncio.create_task(
             _webhook_watchdog(application, full_url, WEBHOOK_SECRET or None)
         )
+        # Render free tier sleeps after 15 idle minutes; keep the instance
+        # awake through the ordering window (see _keepalive_loop).
+        keepalive_task = asyncio.create_task(_keepalive_loop(WEBHOOK_URL))
     else:
         # Local dev: no public HTTPS URL → start long polling inside the
         # FastAPI process so the bot still receives updates while serving
@@ -139,12 +175,13 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        if watchdog_task:
-            watchdog_task.cancel()
-            try:
-                await watchdog_task
-            except asyncio.CancelledError:
-                pass
+        for task in (watchdog_task, keepalive_task):
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
         if polling_active:
             try:
                 await application.updater.stop()

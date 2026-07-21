@@ -70,6 +70,17 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gpt-oss:120b").strip()
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 LOG_FILE = os.getenv("LOG_FILE", "bot.log")
 
+# Render free-tier spin-down workaround: while inside this daily window the
+# app self-pings its own /health every KEEPALIVE_INTERVAL seconds so Render
+# never sees 15 idle minutes and never puts it to sleep. Hours are in
+# TIMEZONE (Asia/Phnom_Penh); end hour is exclusive, so 8 → 13 covers the
+# 8:00 reminder through the 12:00 QR with margin. A sleeping instance cannot
+# ping itself, so the first wake-up of the day must still come from outside
+# (external cron ping, or any Telegram message hitting the webhook).
+KEEPALIVE_START_HOUR = int(os.getenv("KEEPALIVE_START_HOUR", "8"))
+KEEPALIVE_END_HOUR = int(os.getenv("KEEPALIVE_END_HOUR", "13"))
+KEEPALIVE_INTERVAL = int(os.getenv("KEEPALIVE_INTERVAL", "600"))
+
 # Timezone Configuration
 TIMEZONE = "Asia/Phnom_Penh"
 WEEKDAY_REMINDER_MESSAGE_TIME = "8:00"  # 8:00 AM, Monday-Friday
