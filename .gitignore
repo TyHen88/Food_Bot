@@ -81,7 +81,9 @@ coverage.xml
 .ipynb_checkpoints
 
 # pyenv
-.python-version
+# NOT ignored: FastAPI Cloud reads .python-version to pick the interpreter, and
+# PTB 20.1 crashes (weakref) on the 3.14 default. It must be committed/uploaded.
+# .python-version
 
 # pipenv
 Pipfile.lock

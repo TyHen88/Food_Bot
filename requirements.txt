@@ -4,7 +4,11 @@ python-dotenv==1.1.0
 APScheduler>=3.10.4,<4
 
 # Web framework (FastAPI serves webhook + Mini App API + static frontend)
-fastapi>=0.110.0
+# The [standard] extra is REQUIRED on FastAPI Cloud: it starts the app with the
+# `fastapi run` CLI, which lives in fastapi-cli and is only pulled in by this
+# extra. Plain `fastapi` deploys but dies at boot with
+# "To use the fastapi command, please install fastapi[standard]".
+fastapi[standard]>=0.115.0
 uvicorn[standard]>=0.27.0
 
 # Google Sheets (persistence layer — see PLAN.md)
