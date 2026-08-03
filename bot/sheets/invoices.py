@@ -43,6 +43,10 @@ def shape(row: Dict[str, Any]) -> Dict[str, Any]:
         sent_count = int(row.get("sent_count") or 0)
     except (TypeError, ValueError):
         sent_count = 0
+    try:
+        usd_khr_rate = float(row.get("usd_khr_rate") or 0)
+    except (TypeError, ValueError):
+        usd_khr_rate = 0.0
     return {
         "invoice_id": str(row.get("invoice_id", "")),
         "order_id": str(row.get("order_id", "")),
@@ -53,6 +57,13 @@ def shape(row: Dict[str, Any]) -> Dict[str, Any]:
         "total": total,
         "payer_user_id": str(row.get("payer_user_id", "")),
         "payer_name": str(row.get("payer_name", "")),
+        # 0.0 on invoices sent before exchange rates existed — callers show
+        # dollars only rather than inventing a conversion after the fact.
+        "usd_khr_rate": usd_khr_rate,
+        "rate_date": str(row.get("rate_date", "")),
+        "display_currencies": [
+            c for c in str(row.get("display_currencies", "") or "").split(",") if c
+        ] or ["USD"],
         "sent_count": sent_count,
         "last_sent_at": str(row.get("last_sent_at", "")),
         "created_at": str(row.get("created_at", "")),
@@ -70,6 +81,9 @@ async def save_sent(
     total: float,
     payer_user_id: str,
     payer_name: str,
+    usd_khr_rate: float = 0.0,
+    rate_date: str = "",
+    display_currencies: Optional[List[str]] = None,
     sent_by: Optional[int] = None,
 ) -> None:
     """Record that an invoice was (re)sent. Upserts by order_id and bumps
@@ -87,6 +101,15 @@ async def save_sent(
         except (TypeError, ValueError):
             prev_count = 0
         created_at = str(existing.get("created_at") or created_at)
+        # The rate is pinned at first send. A re-send months later must not
+        # silently restate the same invoice at a different exchange rate.
+        try:
+            prev_rate = float(existing.get("usd_khr_rate") or 0)
+        except (TypeError, ValueError):
+            prev_rate = 0.0
+        if prev_rate:
+            usd_khr_rate = prev_rate
+            rate_date = str(existing.get("rate_date") or rate_date)
 
     await repo.upsert_blocking("invoice", {
         "invoice_id": order_id,
@@ -98,6 +121,9 @@ async def save_sent(
         "total": f"{total:.2f}",
         "payer_user_id": payer_user_id,
         "payer_name": payer_name,
+        "usd_khr_rate": f"{float(usd_khr_rate or 0):.2f}",
+        "rate_date": rate_date,
+        "display_currencies": ",".join(display_currencies or ["USD"]),
         "sent_count": str(prev_count + 1),
         "last_sent_at": repo.now_iso(),
         "created_at": created_at,

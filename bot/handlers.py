@@ -25,6 +25,7 @@ from telegram.ext import (
 from .config import (
     ERROR_NO_ORDERS,
     ERROR_POLL_NOT_FOUND,
+    KHR_ROUNDING,
     ORDER_CLOSED_MESSAGE,
     ORDER_NAME,
     MINIAPP_URL,
@@ -54,7 +55,7 @@ from .sheets import repo as sheets_repo
 from .sheets import settings as sheets_settings
 from .sheets.client import is_configured
 import json
-from . import ai
+from . import ai, exchange
 from .utils import format_order_summary, is_food_menu_text, with_retry
 
 logger = logging.getLogger(__name__)
@@ -733,6 +734,49 @@ async def handle_ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await processing_msg.edit_text(f"Sorry, I encountered an error processing your AI query: {str(e)}")
 
 
+async def handle_exchange_rate_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """`/exchange_rate` — the National Bank of Cambodia's official rate.
+
+    Answers from the stored rate (refreshed daily by the scheduler), so it
+    never waits on nbc.gov.kh. NBC doesn't publish at weekends or on
+    holidays, so the reply says which date the rate was published on rather
+    than implying it is today's.
+    """
+    if not update.message:
+        return
+
+    row = await exchange.current()
+    if not row:
+        await update.message.reply_text(
+            "😕 I don't have the exchange rate yet — it's fetched from the "
+            "National Bank of Cambodia once a day. Please try again later.\n\n"
+            "មិនទាន់មានអត្រាប្តូរប្រាក់នៅឡើយទេ សូមព្យាយាមម្តងទៀតនៅពេលក្រោយ។"
+        )
+        return
+
+    rate_date = row["rate_date"]
+    lines = [
+        "🏦 *National Bank of Cambodia — Official Exchange Rate*",
+        "",
+        f"📅 Date: *{rate_date}*",
+        f"💵 Rate: *{exchange.format_rate(row['usd_khr'])}*",
+        "",
+        # Invoice-style examples: rounded exactly as an invoice would round
+        # them, so the numbers here match what people are actually asked to
+        # pay. (A raw "$1 = 4,047៛" line would contradict the invoice.)
+        f"_On invoices:_ $1.00 ≈ {exchange.format_khr(exchange.to_khr(1, row['usd_khr']))} · "
+        f"$5.00 ≈ {exchange.format_khr(exchange.to_khr(5, row['usd_khr']))}",
+        f"_(riel rounded to the nearest {KHR_ROUNDING}៛)_" if KHR_ROUNDING > 1 else "",
+    ]
+    if rate_date != exchange.today().isoformat():
+        lines += [
+            "",
+            "ℹ️ This is the most recent published rate — NBC doesn't publish "
+            "on weekends or public holidays.",
+        ]
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
 async def handle_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Catch-all so a handler exception is logged, not left unhandled."""
     logger.error("Unhandled exception while processing update", exc_info=context.error)
@@ -750,6 +794,7 @@ def setup_handlers(application) -> None:
     application.add_handler(CommandHandler("ty", handle_ty_command))
     application.add_handler(CommandHandler("app", handle_app_command))
     application.add_handler(CommandHandler("ai", handle_ai_command))
+    application.add_handler(CommandHandler("exchange_rate", handle_exchange_rate_command))
 
     # Admin commands (decorated with @admin_only)
     application.add_handler(CommandHandler("admin", handle_admin_command))

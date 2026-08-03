@@ -15,7 +15,7 @@ Conventions (see PLAN.md "Sheets design rules"):
 
 from typing import Dict, List
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 9
 
 # Tab name → ordered list of column headers.
 # Order matters: first column is the PK; bootstrap.py writes headers in this order.
@@ -89,9 +89,24 @@ TABS: Dict[str, List[str]] = {
         # One row per order (PK invoice_id = order_id); re-sending updates the
         # same row. `details` is a JSON array grouped per person:
         # [{"user_name": "...", "items": [{"item_name","qty","price","cost"}], "subtotal": 1.5}]
+        # usd_khr_rate/rate_date PIN the NBC rate used when the invoice was
+        # first sent. Riel amounts are always recomputed from these, never
+        # from today's rate — otherwise every past invoice would silently
+        # change value as the rate moves.
+        # display_currencies: comma-separated "USD" / "KHR" — what the sent
+        # message showed. Stored so a re-send reproduces the original invoice
+        # instead of reverting to the default.
         "invoice_id", "order_id", "poll_id", "chat_id", "order_date",
         "details", "total", "payer_user_id", "payer_name",
+        "usd_khr_rate", "rate_date", "display_currencies",
         "sent_count", "last_sent_at", "created_at", "created_by",
+    ],
+    "exchange_rate": [
+        # One row per publication date of the National Bank of Cambodia's
+        # official rate (nbc.gov.kh, published ~16:30 ICT on working days).
+        # NBC does not publish at weekends or on holidays, so gaps are normal
+        # and the newest row is carried forward — see bot/exchange.py.
+        "rate_date", "usd_khr", "source", "fetched_at",
     ],
 }
 

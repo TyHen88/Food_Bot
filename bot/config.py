@@ -66,6 +66,48 @@ OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "https://ollama.com/api/chat").stri
 OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "").strip()
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gpt-oss:120b").strip()
 
+# Web search for the AI assistant's *external* questions (Ollama's hosted
+# search API — same key as the chat API). Off automatically without a key:
+# the assistant then falls back to answering from the model's own knowledge.
+OLLAMA_SEARCH_URL = os.getenv(
+    "OLLAMA_SEARCH_URL", "https://ollama.com/api/web_search"
+).strip()
+AI_WEB_SEARCH = os.getenv("AI_WEB_SEARCH", "true").strip().lower() in ("1", "true", "yes")
+AI_WEB_SEARCH_RESULTS = int(os.getenv("AI_WEB_SEARCH_RESULTS", "5"))
+
+# Exchange rate — the National Bank of Cambodia's official USD→KHR rate.
+# NBC publishes it around 16:30 ICT on working days; there is no official
+# JSON API, so bot/exchange.py tries the government open-data endpoint first
+# and falls back to parsing NBC's (server-rendered) page.
+NBC_EXCHANGE_URL = os.getenv(
+    "NBC_EXCHANGE_URL",
+    "https://www.nbc.gov.kh/english/economic_research/exchange_rate.php",
+).strip()
+MEF_EXCHANGE_API_URL = os.getenv(
+    "MEF_EXCHANGE_API_URL",
+    "https://data.mef.gov.kh/api/v1/public-datasets/pd_66a0cd503e0bd300012638fb4/file",
+).strip()
+# nbc.gov.kh 403s any client that doesn't look like a browser.
+EXCHANGE_USER_AGENT = os.getenv(
+    "EXCHANGE_USER_AGENT",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+).strip()
+# Sanity band: a parse that drifts outside this is a broken page, not a rate.
+# Keeping the previous value is always better than storing a garbage one.
+EXCHANGE_RATE_MIN = float(os.getenv("EXCHANGE_RATE_MIN", "3000"))
+EXCHANGE_RATE_MAX = float(os.getenv("EXCHANGE_RATE_MAX", "6000"))
+# Warn once the newest stored rate is older than this (weekends + a holiday
+# are normal; a fortnight means the fetch has been failing silently).
+EXCHANGE_RATE_STALE_DAYS = int(os.getenv("EXCHANGE_RATE_STALE_DAYS", "4"))
+# Daily refresh, in TIMEZONE. NBC publishes ~16:30, so 17:10 catches the new
+# rate the same afternoon.
+EXCHANGE_REFRESH_HOUR = int(os.getenv("EXCHANGE_REFRESH_HOUR", "17"))
+EXCHANGE_REFRESH_MINUTE = int(os.getenv("EXCHANGE_REFRESH_MINUTE", "10"))
+# Riel is quoted in whole notes — round each person's amount to the nearest
+# 100៛, the usual retail convention. Set to 1 for exact riel, 0 to disable.
+KHR_ROUNDING = int(os.getenv("KHR_ROUNDING", "100"))
+
 # Logging Configuration
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 LOG_FILE = os.getenv("LOG_FILE", "bot.log")

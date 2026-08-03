@@ -17,12 +17,15 @@ import base64
 import json
 import logging
 import mimetypes
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status, Request
 from pydantic import BaseModel
 
+from .. import exchange
+from ..people import norm_name, strip_invisible
 from ..sheets import invoices as sheets_invoices
 from ..sheets import orders as sheets_orders
 from ..sheets import repo
@@ -238,11 +241,33 @@ async def update_order_items(
     return _shape_order(row, titles=titles, polls=polls, users=users)
 
 
+_LIST_MARKER = re.compile(r"^[\s\-•*·]+")
+
+
 def _clean_item_name(name: Any) -> str:
     """Strip leading list markers ("- dish", "• dish") that menu text often
-    carries into the item JSON — the invoice adds its own bullets."""
-    import re
-    return re.sub(r"^[\s\-•*·]+", "", str(name or "")).strip()
+    carries into the item JSON — the invoice adds its own bullets.
+
+    Zero-width characters go too (`strip_invisible`): menu text pasted into
+    Telegram carries them, and an invisible character is enough to make the
+    stored dish name miss its entry in the admin's price list, which used to
+    silently price that dish at $0.00 — see `_price_of`.
+    """
+    return _LIST_MARKER.sub("", strip_invisible(name)).strip()
+
+
+def _price_of(raw_name: str, item_name: str,
+              price_map: Dict[str, float]) -> Optional[float]:
+    """The price for one dish, most-specific key first: the raw stored name,
+    the marker-stripped name, then the fully normalized one.
+
+    Returns None — never 0.0 — when the dish has no price at all, so callers
+    can tell "this dish is free" apart from "nobody priced this dish".
+    """
+    for key in (raw_name, item_name, norm_name(item_name)):
+        if key in price_map:
+            return price_map[key]
+    return None
 
 
 _ASSETS_DIR = Path(__file__).parent.parent.parent / "assets"
@@ -338,6 +363,11 @@ class InvoiceItemPrice(BaseModel):
 
 class InvoiceBody(BaseModel):
     prices: List[InvoiceItemPrice]
+    # Which currencies the sent invoice shows. Prices above are ALWAYS in USD
+    # — when the admin types riel, the Mini App converts before sending, so
+    # one stored amount means the same thing regardless of how it was keyed.
+    # Empty/unknown falls back to dollars (see exchange.normalize_currencies).
+    currencies: List[str] = ["USD"]
 
 
 def _build_invoice_text(
@@ -345,25 +375,51 @@ def _build_invoice_text(
     user_orders: Dict[str, List[Dict[str, Any]]],
     payer_name: str,
     khqr_text: str = "",
+    rate: Optional[Dict[str, Any]] = None,
+    currencies: Any = None,
 ) -> str:
     """Render the invoice message (Telegram HTML).
 
-    Format:
+    `rate` is the NBC exchange-rate row pinned to this invoice; `currencies`
+    selects what the reader sees — dollars, riel, or both. Each person's
+    total is converted and rounded individually (see exchange.to_khr) so what
+    a member is asked for is a payable amount — which means the riel figures
+    do not necessarily add up to the riel grand total, and that is deliberate.
+
+    Item lines follow the same selection, EXCEPT that a riel-only invoice
+    still shows per-dish prices in riel only; nothing is ever silently
+    dropped, and without a rate everything falls back to dollars.
+
+    Format (currencies = USD + KHR):
         🧾 Order Invoice | 2026-07-15
+        🏦 NBC 2026-07-15 · 4,047 KHR / USD
 
         ▪️ Name
-        • dish ×1   $1.75
-        Subtotal   $3.50        (only when the person has 2+ items)
+        • dish ×1   $1.75 (7,100៛)
+        Subtotal   $3.50 (14,200៛)   (only when the person has 2+ items)
 
         ══════════════════════
-        💰 Total Due   $14.00
+        💰 Total Due   $14.00 (56,700៛)
         💳 Pay to Name
         ══════════════════════
     """
     from html import escape
 
+    usd_khr = float((rate or {}).get("usd_khr") or 0) or None
+    wanted = exchange.normalize_currencies(currencies)
+
+    def money(amount: float) -> str:
+        return exchange.format_money(amount, usd_khr, wanted)
+
     sep = "══════════════════════"
-    lines = [f"🧾 <b>Order Invoice</b> | {escape(order_date)}", ""]
+    lines = [f"🧾 <b>Order Invoice</b> | {escape(order_date)}"]
+    # The rate line only earns its place when riel is actually shown.
+    if usd_khr and "KHR" in wanted:
+        lines.append(
+            f"🏦 <i>NBC {escape(str((rate or {}).get('rate_date', '')))} · "
+            f"{escape(exchange.format_rate(usd_khr))}</i>"
+        )
+    lines.append("")
 
     grand_total = 0.0
     for user_name, user_items in user_orders.items():
@@ -374,14 +430,16 @@ def _build_invoice_text(
         for i in user_items:
             lines.append(
                 f"• {escape(str(i['item_name']))} ×{i['qty']}   "
-                f"<code>${i['cost']:.2f}</code>"
+                f"<code>{money(i['cost'])}</code>"
             )
+        # One person, one dish: their line already IS their total, so only
+        # repeat it as a subtotal when there is more than one dish.
         if len(user_items) > 1:
-            lines.append(f"<b>Subtotal</b>   <code>${user_total:.2f}</code>")
+            lines.append(f"<b>Subtotal</b>   <code>{money(user_total)}</code>")
         lines.append("")
 
     lines.append(sep)
-    lines.append(f"💰 <b>Total Due</b>   <code>${grand_total:.2f}</code>")
+    lines.append(f"💰 <b>Total Due</b>   <code>{money(grand_total)}</code>")
     lines.append(f"💳 <b>Pay to</b> {escape(payer_name)}")
     lines.append(sep)
 
@@ -416,13 +474,16 @@ async def generate_order_invoice(
             status_code=status.HTTP_400_BAD_REQUEST, detail="No items in this order"
         )
 
-    # Price lookup tolerant of leading list markers: match the raw stored
-    # name first, then the cleaned one, so "- dish" and "dish" both resolve
-    # instead of silently falling back to $0.00.
+    # Price lookup tolerant of leading list markers, invisible characters and
+    # capitalisation: match the raw stored name first, then the cleaned one,
+    # then a fully normalized key, so "- dish", "dish" and "Dish​" all
+    # resolve instead of silently falling back to $0.00.
     price_map: Dict[str, float] = {}
     for p in body.prices:
         price_map[p.item_name] = p.price
         price_map.setdefault(_clean_item_name(p.item_name), p.price)
+        price_map.setdefault(norm_name(p.item_name), p.price)
+    unpriced: set = set()
 
     # Group by Telegram user id (fallback: display name) so a member whose
     # display name changed between votes ("Tii" vs "Tii ♏️") gets ONE
@@ -440,13 +501,25 @@ async def generate_order_invoice(
         raw_name = str(it.get("item_name") or "Unknown")
         item_name = _clean_item_name(raw_name) or "Unknown"
         qty = int(it.get("qty") or 1)
-        price = price_map.get(raw_name, price_map.get(item_name, 0.0))
+        price = _price_of(raw_name, item_name, price_map)
+        if price is None:
+            # Every unmatched dish makes the invoice — and every total built
+            # from it later, including the AI assistant's — too low, so it
+            # gets logged and reported back rather than vanishing.
+            unpriced.add(item_name)
+            price = 0.0
 
         slot = grouped.setdefault(key, {}).setdefault(item_name, {
             "item_name": item_name, "qty": 0, "price": price, "cost": 0.0,
         })
         slot["qty"] += qty
-        slot["cost"] = slot["price"] * slot["qty"]
+        slot["cost"] = round(slot["price"] * slot["qty"], 2)
+
+    if unpriced:
+        logger.warning(
+            "Invoice for order %s: no price supplied for %d dish(es), counted "
+            "as $0.00 — %s", order_id, len(unpriced), sorted(unpriced),
+        )
 
     user_orders: Dict[str, List[Dict[str, Any]]] = {}
     for key, dishes in grouped.items():
@@ -464,13 +537,29 @@ async def generate_order_invoice(
             khqr_text = payer_row.get("khqr_text") or ""
             payer_full_name = payer_row.get("full_name") or payer_full_name
 
+    # The rate in force on the ORDER's date, not today's — invoicing last
+    # Friday's lunch this Monday must quote Friday's rate.
+    rate = await exchange.rate_for(str(row.get("order_date") or ""))
+    currencies = exchange.normalize_currencies(body.currencies)
+    if "KHR" in currencies and not rate:
+        # Asking for riel with no rate available would silently produce a
+        # dollars-only invoice; say so instead of quietly ignoring the choice.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No exchange rate available yet, so riel amounts can't be "
+                   "calculated. Send in USD, or try again once the daily rate "
+                   "has been fetched.",
+        )
+
     invoice_text = _build_invoice_text(
         str(row.get("order_date") or ""),
         user_orders,
         payer_full_name,
         khqr_text,
+        rate,
+        currencies,
     )
-    grand_total = sum(i["cost"] for items in user_orders.values() for i in items)
+    grand_total = round(sum(i["cost"] for items in user_orders.values() for i in items), 2)
 
     # Send to the Telegram chat, attaching the payer's QR image when set.
     chat_id = row.get("chat_id")
@@ -514,6 +603,9 @@ async def generate_order_invoice(
             total=grand_total,
             payer_user_id=str(payer_id or ""),
             payer_name=payer_full_name,
+            usd_khr_rate=float((rate or {}).get("usd_khr") or 0),
+            rate_date=str((rate or {}).get("rate_date") or ""),
+            display_currencies=list(currencies),
             sent_by=(auth.get("user") or {}).get("id"),
         )
     except Exception as e:
@@ -522,5 +614,16 @@ async def generate_order_invoice(
             f"Invoice sent but saving to the invoice sheet failed: {e}", exc_info=True
         )
 
-    return {"ok": True, "total": grand_total}
+    # unpriced_items lets the Mini App warn that dishes were billed at $0.00
+    # instead of the admin discovering it from a too-low total days later.
+    return {
+        "ok": True,
+        "total": grand_total,
+        "total_khr": exchange.to_khr(grand_total, (rate or {}).get("usd_khr") or 0)
+        if rate else None,
+        "usd_khr_rate": (rate or {}).get("usd_khr"),
+        "rate_date": (rate or {}).get("rate_date"),
+        "currencies": list(currencies),
+        "unpriced_items": sorted(unpriced),
+    }
 

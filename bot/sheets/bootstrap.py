@@ -38,28 +38,62 @@ _META_TAB = "_meta"
 def _ensure_schema_sync() -> None:
     ss = get_spreadsheet()
     existing = {ws.title: ws for ws in ss.worksheets()}
+    created: List[str] = []
+    extended: List[str] = []
 
     for tab, headers in TABS.items():
-        if tab not in existing:
-            ws = ss.add_worksheet(title=tab, rows=200, cols=max(len(headers), 10))
-            ws.update(values=[headers], range_name=f"A1:{rowcol_to_a1(1, len(headers))}")
-            ws.freeze(rows=1)
-            logger.info(f"Created tab '{tab}' with {len(headers)} columns")
-            continue
+        # Name the tab in the log before doing anything to it: this runs
+        # ~2 API calls per tab against a 60/min quota, and a failure part-way
+        # through used to surface only as a bare exception in main.py's
+        # "Sheets bootstrap failed" line, with no clue which tab broke.
+        try:
+            if tab not in existing:
+                ws = ss.add_worksheet(title=tab, rows=200, cols=max(len(headers), 10))
+                ws.update(values=[headers], range_name=f"A1:{rowcol_to_a1(1, len(headers))}")
+                ws.freeze(rows=1)
+                created.append(tab)
+                logger.info(f"Created tab '{tab}' with {len(headers)} columns")
+                continue
 
-        ws = existing[tab]
-        first_row = ws.row_values(1)
-        # Append any missing headers at the end (preserve manual reorders by user).
-        missing = [h for h in headers if h not in first_row]
-        if missing:
-            start_col = len(first_row) + 1
-            end_col = start_col + len(missing) - 1
-            ws.update(
-                values=[missing],
-                range_name=f"{rowcol_to_a1(1, start_col)}:{rowcol_to_a1(1, end_col)}",
+            ws = existing[tab]
+            first_row = ws.row_values(1)
+            # Append any missing headers at the end (preserve manual reorders by user).
+            missing = [h for h in headers if h not in first_row]
+            if missing:
+                start_col = len(first_row) + 1
+                end_col = start_col + len(missing) - 1
+                # A tab's grid is only as wide as it was created; writing past
+                # its last column fails with "Range (invoice!N1:O1) exceeds
+                # grid limits", NOT by growing the sheet. Widen it first, or
+                # every schema addition beyond the original column count
+                # aborts the whole bootstrap.
+                current_cols = ws.col_count
+                if current_cols < end_col:
+                    ws.add_cols(end_col - current_cols)
+                    logger.info(
+                        f"Widened '{tab}' from {current_cols} to {end_col} columns"
+                    )
+                ws.update(
+                    values=[missing],
+                    range_name=f"{rowcol_to_a1(1, start_col)}:{rowcol_to_a1(1, end_col)}",
+                )
+                extended.append(tab)
+                logger.info(f"Appended missing columns to '{tab}': {missing}")
+            ws.freeze(rows=1)
+        except Exception:
+            # Re-raise unchanged so with_retry still sees the original APIError
+            # (and its 429/5xx status) — this only adds the missing context.
+            logger.error(
+                "ensure_schema failed while processing tab '%s' "
+                "(%d/%d tabs done: created=%s, extended=%s)",
+                tab, len(created) + len(extended), len(TABS), created, extended,
             )
-            logger.info(f"Appended missing columns to '{tab}': {missing}")
-        ws.freeze(rows=1)
+            raise
+
+    logger.info(
+        "Schema check complete: %d tab(s) present, created=%s, columns added to=%s",
+        len(TABS), created or "none", extended or "none",
+    )
 
 
 @with_retry()

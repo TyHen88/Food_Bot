@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
+from .. import exchange
+from ..people import is_same_person, name_variants
 from ..sheets import invoices as sheets_invoices
 from ..sheets import payers as sheets_payers
 from .auth import caller_chat_id, caller_user_id, require_admin, require_member
@@ -35,34 +37,29 @@ async def _allowed_chats(auth: dict) -> Optional[set]:
 
 
 def _caller_names(auth: dict) -> set:
-    """Lowercased display-name candidates for the caller, used to match old
+    """Normalized display-name candidates for the caller, used to match old
     invoice details that predate the per-entry user_id field."""
     u = auth.get("user") or {}
-    first = str(u.get("first_name") or "").strip()
-    last = str(u.get("last_name") or "").strip()
-    return {
-        n.lower()
-        for n in (u.get("username") or "", first, f"{first} {last}".strip())
-        if n
-    }
+    return name_variants(
+        username=u.get("username") or "",
+        first_name=u.get("first_name") or "",
+        last_name=u.get("last_name") or "",
+    )
 
 
 def _my_amount(details: List[Dict[str, Any]], caller_id: str, caller_names: set) -> float:
     """Sum of the caller's per-person subtotals in one invoice's details.
     Entries carrying user_id match on it; legacy entries fall back to a
-    display-name match."""
+    display-name match (see bot/people.py — the AI assistant matches the
+    same way, so the Invoices page and the assistant agree on "my amount")."""
     total = 0.0
     for d in details or []:
+        if not is_same_person(d.get("user_id"), d.get("user_name"), caller_id, caller_names):
+            continue
         try:
-            sub = float(d.get("subtotal") or 0)
+            total += float(d.get("subtotal") or 0)
         except (TypeError, ValueError):
-            sub = 0.0
-        did = str(d.get("user_id") or "").strip()
-        if did:
-            if caller_id and did == caller_id:
-                total += sub
-        elif str(d.get("user_name") or "").strip().lower() in caller_names:
-            total += sub
+            pass
     return round(total, 2)
 
 
@@ -92,11 +89,16 @@ async def list_invoices(
     names = _caller_names(auth)
     out = []
     for r in rows:
+        my_amount = _my_amount(r["details"], caller_id, names)
+        rate = r.get("usd_khr_rate") or 0
         out.append({
             **{k: v for k, v in r.items() if k != "details"},
             "chat_title": titles.get(r["chat_id"], ""),
             "person_count": len(r["details"]),
-            "my_amount": _my_amount(r["details"], caller_id, names),
+            "my_amount": my_amount,
+            # Converted at the invoice's own pinned rate, never today's.
+            "my_amount_khr": exchange.to_khr(my_amount, rate) if rate else None,
+            "total_khr": exchange.to_khr(r.get("total") or 0, rate) if rate else None,
         })
     out.sort(key=lambda r: (r.get("order_date") or "", r.get("last_sent_at") or ""), reverse=True)
     return out
@@ -159,7 +161,17 @@ async def resend_invoice(
         if payer_row:
             khqr_text = payer_row.get("khqr_text") or ""
 
-    text = _build_invoice_text(inv["order_date"], user_orders, inv["payer_name"], khqr_text)
+    # Re-send at the rate the invoice was ORIGINALLY sent at (pinned on the
+    # row), so the riel figures people already paid don't move. Invoices from
+    # before exchange rates existed have no rate and stay dollars-only.
+    pinned_rate = (
+        {"usd_khr": inv["usd_khr_rate"], "rate_date": inv["rate_date"]}
+        if inv.get("usd_khr_rate") else None
+    )
+    text = _build_invoice_text(
+        inv["order_date"], user_orders, inv["payer_name"], khqr_text, pinned_rate,
+        inv.get("display_currencies"),
+    )
 
     try:
         application = request.app.state.application
@@ -183,6 +195,9 @@ async def resend_invoice(
         total=inv["total"],
         payer_user_id=inv["payer_user_id"],
         payer_name=inv["payer_name"],
+        usd_khr_rate=inv["usd_khr_rate"],
+        rate_date=inv["rate_date"],
+        display_currencies=inv.get("display_currencies"),
         sent_by=user_id,
     )
     return {"ok": True, "sent_count": inv["sent_count"] + 1}

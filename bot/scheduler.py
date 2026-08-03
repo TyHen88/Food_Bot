@@ -26,8 +26,11 @@ from apscheduler.triggers.date import DateTrigger
 from telegram import Bot
 from telegram.ext import Application, ContextTypes
 
+from . import exchange
 from .config import (
     DAILY_MESSAGE,
+    EXCHANGE_REFRESH_HOUR,
+    EXCHANGE_REFRESH_MINUTE,
     TIMEZONE,
     WEEKDAY_REMINDER_MESSAGE_TIME,
     WEEKDAY_VONGSA_QR_TIME,
@@ -466,6 +469,45 @@ async def _register_cutoff_job(
     logger.info(f"Registered cutoff snapshot job at {hour:02d}:{minute:02d} (Mon-Fri)")
 
 
+async def _refresh_exchange_rate() -> None:
+    """Pull NBC's official USD→KHR rate into the `exchange_rate` tab.
+
+    Runs daily after NBC publishes (~16:30 ICT) and once at startup so a
+    fresh deploy is never rate-less. Failures are logged, never raised: the
+    stored rate carries forward and invoices keep working.
+    """
+    try:
+        row = await exchange.refresh()
+        if row is None and await exchange.is_stale():
+            current = await exchange.current()
+            logger.error(
+                "Exchange rate refresh failed and the stored rate is stale "
+                "(newest: %s). Invoices will quote an out-of-date rate.",
+                (current or {}).get("rate_date", "never fetched"),
+            )
+    except Exception as e:
+        logger.error(f"Exchange rate refresh job failed: {e}", exc_info=True)
+
+
+async def _register_exchange_rate_job(scheduler: AsyncIOScheduler) -> None:
+    """Daily rate refresh. Every day, not Mon-Fri: NBC doesn't publish at
+    weekends, but a Saturday run is what recovers a Friday the fetch missed."""
+    scheduler.add_job(
+        _refresh_exchange_rate,
+        trigger="cron",
+        hour=EXCHANGE_REFRESH_HOUR,
+        minute=EXCHANGE_REFRESH_MINUTE,
+        id="exchange_rate_refresh",
+        replace_existing=True,
+    )
+    logger.info(
+        f"Registered exchange-rate refresh at "
+        f"{EXCHANGE_REFRESH_HOUR:02d}:{EXCHANGE_REFRESH_MINUTE:02d} (daily)"
+    )
+    # Don't make the first quote wait until this evening.
+    asyncio.create_task(_refresh_exchange_rate())
+
+
 async def reload_schedules(application: Application) -> None:
     """Re-read `schedule` tab and rebuild APScheduler jobs in place."""
     await setup_scheduler(application)
@@ -496,6 +538,10 @@ async def setup_scheduler(application: Application) -> None:
             await _register_cutoff_job(_scheduler, application)
         else:
             await _register_fallback_jobs(_scheduler, application)
+        # Independent of the `schedule` tab — the rate is infrastructure, not
+        # a message someone configured.
+        await _register_exchange_rate_job(_scheduler)
+        if not is_configured():
             logger.info(
                 f"Scheduled fallback reminders at {WEEKDAY_REMINDER_MESSAGE_TIME} "
                 f"and {WEEKDAY_VONGSA_QR_TIME} ({tz_name})"
