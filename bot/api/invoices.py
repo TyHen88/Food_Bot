@@ -16,6 +16,8 @@ from .. import exchange
 from ..people import is_same_person, name_variants
 from ..sheets import invoices as sheets_invoices
 from ..sheets import payers as sheets_payers
+from ..sheets import repo
+from ..sheets.client import is_configured
 from .auth import caller_chat_id, caller_user_id, require_admin, require_member
 from .members import user_chats
 from .orders import _build_invoice_text, _chat_titles, payer_qr_data_uri, send_invoice_message
@@ -36,15 +38,29 @@ async def _allowed_chats(auth: dict) -> Optional[set]:
     return chats
 
 
-def _caller_names(auth: dict) -> set:
+async def _caller_names(auth: dict) -> set:
     """Normalized display-name candidates for the caller, used to match old
     invoice details that predate the per-entry user_id field."""
     u = auth.get("user") or {}
-    return name_variants(
+    candidates = name_variants(
         username=u.get("username") or "",
         first_name=u.get("first_name") or "",
         last_name=u.get("last_name") or "",
     )
+    caller_id = caller_user_id(auth)
+    if caller_id and is_configured():
+        try:
+            user_row = await repo.find_by_pk("user", caller_id)
+            if user_row:
+                candidates.update(
+                    name_variants(
+                        username=user_row.get("username") or "",
+                        full_name=user_row.get("full_name") or "",
+                    )
+                )
+        except Exception:
+            pass
+    return candidates
 
 
 def _my_amount(details: List[Dict[str, Any]], caller_id: str, caller_names: set) -> float:
@@ -86,7 +102,7 @@ async def list_invoices(
 
     titles = await _chat_titles()
     caller_id = caller_user_id(auth)
-    names = _caller_names(auth)
+    names = await _caller_names(auth)
     out = []
     for r in rows:
         my_amount = _my_amount(r["details"], caller_id, names)
