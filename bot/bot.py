@@ -89,6 +89,7 @@ def build_application() -> Application:
         read_timeout=30,
         write_timeout=30,
         pool_timeout=30,
+        http_version="1.1",
     )
 
     application = (
