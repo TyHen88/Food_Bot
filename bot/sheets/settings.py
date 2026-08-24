@@ -58,3 +58,22 @@ async def get_time(key: str, default: str = "00:00") -> tuple[int, int]:
         logger.warning(f"Setting '{key}' is not HH:MM: {raw!r}, using {default}")
         hh, mm = default.split(":")
         return int(hh), int(mm)
+
+
+async def set(key: str, value: Any, updated_by: str = "", description: str = "") -> None:
+    """Set or update a setting in the `setting` tab."""
+    if not is_configured():
+        return
+    from . import repo
+    val_str = str(value)
+    existing = await repo.find_by_pk("setting", key)
+    row = {
+        "key": key,
+        "value": val_str,
+        "value_type": (existing or {}).get("value_type", "string"),
+        "description": description or (existing or {}).get("description", ""),
+        "updated_at": repo.now_iso(),
+        "updated_by": str(updated_by or ""),
+    }
+    await repo.upsert("setting", row)
+

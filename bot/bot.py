@@ -39,6 +39,7 @@ BOT_COMMANDS = [
     # NOTE: /admin is intentionally NOT listed here — it still works if typed
     # (handler stays registered), but it's hidden from the command menu.
     BotCommand("set", "Update a setting key"),
+    BotCommand("setup_payment_bot", "Setup payment bot & target group"),
     BotCommand("schedule_list", "List configured schedules"),
     BotCommand("schedule_enable", "Enable a schedule"),
     BotCommand("schedule_disable", "Disable a schedule"),

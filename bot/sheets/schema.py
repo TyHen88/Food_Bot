@@ -15,7 +15,7 @@ Conventions (see PLAN.md "Sheets design rules"):
 
 from typing import Dict, List
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # Tab name → ordered list of column headers.
 # Order matters: first column is the PK; bootstrap.py writes headers in this order.
@@ -37,7 +37,8 @@ TABS: Dict[str, List[str]] = {
     "user": [
         # chat_id records the most recent chat the user interacted in, so
         # members can be looked up by chat without deriving from votes/orders.
-        "user_id", "username", "full_name", "phone_number", "chat_id",
+        # bank_name stores the ABA Bank Account name for automatic payment matching.
+        "user_id", "username", "full_name", "bank_name", "phone_number", "chat_id",
         "role", "language",
         "dietary_notes", "created_at", "last_active_at",
     ],
@@ -107,6 +108,14 @@ TABS: Dict[str, List[str]] = {
         # NBC does not publish at weekends or on holidays, so gaps are normal
         # and the newest row is carried forward — see bot/exchange.py.
         "rate_date", "usd_khr", "source", "fetched_at",
+    ],
+    "payment": [
+        # One row per incoming payment transaction (e.g. from PayWay ABA @PayWayByABA_bot).
+        # settled_orders: JSON array [{"order_id": "...", "date": "...", "amount": 1.5}, ...]
+        # status: MATCHED, UNMATCHED, MANUAL
+        "payment_id", "trx_id", "user_id", "sender_name", "amount",
+        "currency", "amount_usd", "settled_orders", "status",
+        "apv", "raw_text", "created_at",
     ],
 }
 

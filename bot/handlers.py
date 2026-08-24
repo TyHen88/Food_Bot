@@ -56,6 +56,8 @@ from .sheets import settings as sheets_settings
 from .sheets.client import is_configured
 import json
 from . import ai, exchange
+from .payway import is_payway_text, parse_payway_transaction
+from .settlement import process_transaction_settlement
 from .utils import format_order_summary, is_food_menu_text, with_retry
 
 logger = logging.getLogger(__name__)
@@ -171,6 +173,38 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     text = update.message.text.strip()
     logger.info(f"Received message text: {repr(text)}")
+
+    if is_payway_text(text):
+        tx = parse_payway_transaction(text)
+        if tx:
+            logger.info(f"Processing PayWay transaction: {tx.trx_id} from {tx.sender_name} (${tx.amount_usd})")
+            chat = update.effective_chat
+            chat_id = chat.id if chat else None
+            res = await process_transaction_settlement(tx)
+
+            if res.get("status") in ("MATCHED", "UNMATCHED"):
+                receipt_text = res.get("receipt_text")
+                if receipt_text:
+                    tgt_chat_str = await sheets_settings.get("PAYMENT_TARGET_CHAT_ID", "")
+                    send_chat_id = int(tgt_chat_str) if (tgt_chat_str and tgt_chat_str.strip()) else chat_id
+                    if send_chat_id:
+                        try:
+                            await with_retry(
+                                context.bot.send_message,
+                                chat_id=send_chat_id,
+                                text=receipt_text,
+                                parse_mode="HTML",
+                            )
+                            if chat_id and send_chat_id != chat_id:
+                                await with_retry(
+                                    context.bot.send_message,
+                                    chat_id=chat_id,
+                                    text=f"✅ Payment from <b>{tx.sender_name}</b> (${tx.amount_usd:.2f}) processed. Receipt posted to target group.",
+                                    parse_mode="HTML",
+                                )
+                        except Exception as e:
+                            logger.error(f"Failed to send PayWay receipt: {e}")
+            return
 
     if is_food_menu_text(text):
         user = update.effective_user
@@ -347,6 +381,87 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                     f"⚠️ Order closed, but writing to the `order` sheet failed: "
                     f"{snapshot_error}"
                 )
+            except Exception:
+                pass
+
+    elif query.data.startswith("paycfg_"):
+        action = query.data.replace("paycfg_", "")
+        chat_id = query.message.chat.id
+
+        if action == "source_here":
+            await sheets_settings.set("PAYMENT_SOURCE_CHAT_ID", str(chat_id))
+            await query.answer("Source chat updated to current group!")
+            text, markup = await _build_payment_bot_config_view(chat_id)
+            try:
+                await query.edit_message_text(text, reply_markup=markup, parse_mode="HTML")
+            except Exception:
+                pass
+
+        elif action == "target_here":
+            await sheets_settings.set("PAYMENT_TARGET_CHAT_ID", str(chat_id))
+            await query.answer("Target chat updated to current group!")
+            text, markup = await _build_payment_bot_config_view(chat_id)
+            try:
+                await query.edit_message_text(text, reply_markup=markup, parse_mode="HTML")
+            except Exception:
+                pass
+
+        elif action == "pick_target":
+            chats = await sheets_repo.list_all("chat") if is_configured() else []
+            keyboard = []
+            for c in chats:
+                cid = str(c.get("chat_id", "")).strip()
+                title = str(c.get("title", "")).strip() or f"Chat {cid}"
+                if cid:
+                    keyboard.append([InlineKeyboardButton(f"🎯 {title}", callback_data=f"paycfg_settgt_{cid}")])
+            keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="paycfg_refresh")])
+            await query.answer()
+            try:
+                await query.edit_message_text(
+                    "🌐 <b>Select Target Group to Send Receipts:</b>",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+
+        elif action.startswith("settgt_"):
+            tgt_cid = action.replace("settgt_", "")
+            await sheets_settings.set("PAYMENT_TARGET_CHAT_ID", tgt_cid)
+            await query.answer(f"Target chat set to {tgt_cid}!")
+            text, markup = await _build_payment_bot_config_view(chat_id)
+            try:
+                await query.edit_message_text(text, reply_markup=markup, parse_mode="HTML")
+            except Exception:
+                pass
+
+        elif action == "test":
+            from .payway import PayWayTransaction
+            from .settlement import format_receipt_message
+            tgt_chat = await sheets_settings.get("PAYMENT_TARGET_CHAT_ID", "")
+            send_to = int(tgt_chat) if (tgt_chat and tgt_chat.strip()) else chat_id
+
+            test_tx = PayWayTransaction(
+                amount=0.10, currency="USD", amount_usd=0.10,
+                sender_name="HEN TY", account_mask="*859",
+                date_str="Aug 24, 11:37 AM", payment_method="ABA KHQR (Test)",
+                merchant="HEN TY", trx_id="TEST_999999", apv="999999", raw_text=""
+            )
+            test_user = {"username": "ahh_tiii", "full_name": "Tii ♏️"}
+            test_settled = [{"date": "2026-08-24", "amount": 0.10, "status": "PAID"}]
+            msg = format_receipt_message(test_user, test_tx, test_settled, remaining_balance=0.0)
+
+            try:
+                await context.bot.send_message(chat_id=send_to, text=f"🧪 <i>[TEST PAYMENT RECEIPT]</i>\n\n{msg}", parse_mode="HTML")
+                await query.answer(f"Test receipt sent to chat {send_to}!")
+            except Exception as e:
+                await query.answer(f"Error sending test: {e}", show_alert=True)
+
+        elif action == "refresh":
+            await query.answer()
+            text, markup = await _build_payment_bot_config_view(chat_id)
+            try:
+                await query.edit_message_text(text, reply_markup=markup, parse_mode="HTML")
             except Exception:
                 pass
 
@@ -602,6 +717,83 @@ async def handle_schedule_disable_command(
     await _toggle_schedule(update, context, active=False)
 
 
+async def _build_payment_bot_config_view(current_chat_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    """Build text and keyboard for /setup_payment_bot."""
+    bot_name = await sheets_settings.get("PAYMENT_BOT_USERNAME", "PayWayByABA_bot")
+    src_chat = await sheets_settings.get("PAYMENT_SOURCE_CHAT_ID", "")
+    tgt_chat = await sheets_settings.get("PAYMENT_TARGET_CHAT_ID", "")
+
+    chats = await sheets_repo.list_all("chat") if is_configured() else []
+    chat_titles = {str(c.get("chat_id", "")).strip(): str(c.get("title", "")).strip() for c in chats}
+
+    src_label = chat_titles.get(src_chat, src_chat) if src_chat else "All Chats (Any Group)"
+    tgt_label = chat_titles.get(tgt_chat, tgt_chat) if tgt_chat else "Current / Same Group"
+
+    text = (
+        "⚙️ <b>Payment Bot & Target Group Setup</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🤖 <b>Source Bot:</b> @{bot_name}\n"
+        f"📥 <b>Source Group (Transactions):</b> <code>{src_label}</code>\n"
+        f"📤 <b>Target Group (Send Receipts):</b> <code>{tgt_label}</code>\n\n"
+        "<i>Transactions from @PayWayByABA_bot will be parsed and receipts will be sent to the target group.</i>\n\n"
+        "Choose an action below to update:"
+    )
+
+    keyboard = [
+        [
+            InlineKeyboardButton("📥 Listen in This Chat", callback_data="paycfg_source_here"),
+            InlineKeyboardButton("📤 Send Receipts Here", callback_data="paycfg_target_here"),
+        ],
+        [
+            InlineKeyboardButton("🌐 Choose Target Group", callback_data="paycfg_pick_target"),
+            InlineKeyboardButton("🧪 Send Test Receipt", callback_data="paycfg_test"),
+        ],
+        [
+            InlineKeyboardButton("🔄 Refresh", callback_data="paycfg_refresh"),
+        ],
+    ]
+    return text, InlineKeyboardMarkup(keyboard)
+
+
+@admin_only
+async def handle_setup_payment_bot_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """`/setup_payment_bot` — configure source bot and target group for payment receipts."""
+    if not is_configured():
+        await update.message.reply_text("Settings storage requires Google Sheets to be configured.")
+        return
+
+    chat_id = update.effective_chat.id
+    parts = _split_command_args(update.message.text or "", 3)
+
+    if len(parts) >= 2:
+        subcmd = parts[1].strip().lower()
+        if subcmd == "target" and len(parts) >= 3:
+            target_val = parts[2].strip()
+            if target_val.lower() == "here":
+                target_val = str(chat_id)
+            await sheets_settings.set("PAYMENT_TARGET_CHAT_ID", target_val)
+            await update.message.reply_text(f"✅ Set `PAYMENT_TARGET_CHAT_ID` = `{target_val}`", parse_mode="Markdown")
+            return
+        elif subcmd == "source" and len(parts) >= 3:
+            source_val = parts[2].strip()
+            if source_val.lower() == "here":
+                source_val = str(chat_id)
+            await sheets_settings.set("PAYMENT_SOURCE_CHAT_ID", source_val)
+            await update.message.reply_text(f"✅ Set `PAYMENT_SOURCE_CHAT_ID` = `{source_val}`", parse_mode="Markdown")
+            return
+        elif subcmd == "bot" and len(parts) >= 3:
+            bot_val = parts[2].strip().lstrip("@")
+            await sheets_settings.set("PAYMENT_BOT_USERNAME", bot_val)
+            await update.message.reply_text(f"✅ Set `PAYMENT_BOT_USERNAME` = `@{bot_val}`", parse_mode="Markdown")
+            return
+
+    text, reply_markup = await _build_payment_bot_config_view(chat_id)
+    await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
+
+
+
 async def handle_app_command(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -799,6 +991,8 @@ def setup_handlers(application) -> None:
     # Admin commands (decorated with @admin_only)
     application.add_handler(CommandHandler("admin", handle_admin_command))
     application.add_handler(CommandHandler("set", handle_set_command))
+    application.add_handler(CommandHandler("setup_payment_bot", handle_setup_payment_bot_command))
+    application.add_handler(CommandHandler("payment_bot", handle_setup_payment_bot_command))
     application.add_handler(CommandHandler("schedule_list", handle_schedule_list_command))
     application.add_handler(CommandHandler("schedule_enable", handle_schedule_enable_command))
     application.add_handler(CommandHandler("schedule_disable", handle_schedule_disable_command))

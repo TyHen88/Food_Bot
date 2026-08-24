@@ -210,6 +210,7 @@ async def list_members(
             "user_id": uid,
             "name": full_name or username or f"User{uid}",
             "username": username,
+            "bank_name": (u.get("bank_name") or "").strip(),
             "phone": (u.get("phone_number") or "").strip(),
             "role": "Admin" if is_admin else "Member",
             "status": "Active" if is_active else "Inactive",
@@ -219,3 +220,46 @@ async def list_members(
     # Active first, then by name.
     out.sort(key=lambda r: (r["status"] != "Active", r["name"].lower()))
     return out
+
+
+from pydantic import BaseModel
+
+class MemberUpdate(BaseModel):
+    bank_name: Optional[str] = None
+    role: Optional[str] = None
+    full_name: Optional[str] = None
+
+
+@router.put("/{user_id}")
+async def update_member(
+    user_id: str,
+    body: MemberUpdate,
+    auth: dict = Depends(require_member),
+) -> Dict[str, Any]:
+    """Update member's bank_name or profile."""
+    caller_id = caller_user_id(auth)
+    is_admin = auth.get("is_admin")
+    if not is_admin and caller_id != str(user_id):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    updates: Dict[str, Any] = {}
+    if body.bank_name is not None:
+        updates["bank_name"] = body.bank_name.strip()
+    if body.full_name is not None:
+        updates["full_name"] = body.full_name.strip()
+    if body.role is not None and is_admin:
+        updates["role"] = body.role.strip().upper()
+
+    if updates and is_configured():
+        await repo.update("user", user_id, updates)
+
+    row = await repo.find_by_pk("user", user_id) if is_configured() else {}
+    return {
+        "user_id": user_id,
+        "username": str(row.get("username", "")),
+        "name": str(row.get("full_name", "")),
+        "bank_name": str(row.get("bank_name", "")),
+        "role": str(row.get("role", "")),
+    }
+

@@ -47,20 +47,22 @@ def _caller_names(auth: dict) -> set:
     )
 
 
-def _my_amount(details: List[Dict[str, Any]], caller_id: str, caller_names: set) -> float:
-    """Sum of the caller's per-person subtotals in one invoice's details.
-    Entries carrying user_id match on it; legacy entries fall back to a
-    display-name match (see bot/people.py — the AI assistant matches the
-    same way, so the Invoices page and the assistant agree on "my amount")."""
+def _my_amount_and_paid(details: List[Dict[str, Any]], caller_id: str, caller_names: set) -> tuple[float, bool]:
+    """Sum of caller's subtotals and whether they have fully paid."""
     total = 0.0
+    paid = True
+    found = False
     for d in details or []:
         if not is_same_person(d.get("user_id"), d.get("user_name"), caller_id, caller_names):
             continue
+        found = True
         try:
             total += float(d.get("subtotal") or 0)
         except (TypeError, ValueError):
             pass
-    return round(total, 2)
+        if not d.get("paid"):
+            paid = False
+    return round(total, 2), (paid if found else False)
 
 
 @router.get("")
@@ -89,13 +91,20 @@ async def list_invoices(
     names = _caller_names(auth)
     out = []
     for r in rows:
-        my_amount = _my_amount(r["details"], caller_id, names)
+        details = r.get("details") or []
+        my_amount, my_paid = _my_amount_and_paid(details, caller_id, names)
         rate = r.get("usd_khr_rate") or 0
+        paid_count = sum(1 for d in details if d.get("paid"))
+        all_paid = bool(details and paid_count == len(details))
+
         out.append({
             **{k: v for k, v in r.items() if k != "details"},
             "chat_title": titles.get(r["chat_id"], ""),
-            "person_count": len(r["details"]),
+            "person_count": len(details),
+            "paid_count": paid_count,
+            "all_paid": all_paid,
             "my_amount": my_amount,
+            "my_paid": my_paid,
             # Converted at the invoice's own pinned rate, never today's.
             "my_amount_khr": exchange.to_khr(my_amount, rate) if rate else None,
             "total_khr": exchange.to_khr(r.get("total") or 0, rate) if rate else None,

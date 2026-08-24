@@ -153,3 +153,42 @@ async def order_ids_with_invoice() -> set:
         for r in await repo.list_all("invoice")
         if str(r.get("order_id", "")).strip()
     }
+
+
+async def mark_member_paid(
+    invoice_id: str,
+    user_id: str,
+    user_names: set,
+    *,
+    payment_id: str = "",
+    paid_amount: float = 0.0,
+) -> bool:
+    """Mark a specific user's subtotal in an invoice as PAID."""
+    if not is_configured():
+        return False
+    row = await repo.find_by_pk("invoice", str(invoice_id))
+    if not row:
+        return False
+
+    from ..people import is_same_person
+    details = _parse_details(row.get("details"))
+    updated = False
+    now = repo.now_iso()
+
+    for d in details:
+        if is_same_person(d.get("user_id"), d.get("user_name"), user_id, user_names):
+            d["paid"] = True
+            d["paid_at"] = now
+            d["payment_id"] = payment_id
+            if paid_amount:
+                d["paid_amount"] = paid_amount
+            else:
+                d["paid_amount"] = float(d.get("subtotal") or 0)
+            updated = True
+
+    if updated:
+        await repo.update("invoice", str(invoice_id), {
+            "details": json.dumps(details, ensure_ascii=False)
+        })
+    return updated
+
