@@ -182,7 +182,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             chat_id = chat.id if chat else None
             res = await process_transaction_settlement(tx)
 
-            if res.get("status") in ("MATCHED", "UNMATCHED"):
+            # Only send receipt to target group if sender is a registered Food Bot member
+            if res.get("status") == "MATCHED":
                 receipt_text = res.get("receipt_text")
                 if receipt_text:
                     tgt_chat_str = await sheets_settings.get("PAYMENT_TARGET_CHAT_ID", "")
@@ -204,6 +205,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                                 )
                         except Exception as e:
                             logger.error(f"Failed to send PayWay receipt: {e}")
+            else:
+                logger.info(
+                    f"PayWay payment from '{tx.sender_name}' (${tx.amount_usd:.2f}) is not a registered member "
+                    f"(status={res.get('status')}). Payment saved to sheet, but no receipt sent to group."
+                )
             return
 
     if is_food_menu_text(text):

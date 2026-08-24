@@ -94,10 +94,26 @@ def test_receipt_formatting():
     print("✓ Receipt formatting works")
 
 
+def test_non_member_handling():
+    from bot.payway import parse_payway_transaction
+
+    text = (
+        "$25.00 paid by STRANGER UNKNOWN (*999) on Aug 24, 02:15 PM via ABA KHQR "
+        "at HEN TY. Trx. ID: 8888888888, APV: 111111."
+    )
+    tx = parse_payway_transaction(text)
+    assert tx is not None
+    assert tx.sender_name == "STRANGER UNKNOWN"
+    assert tx.amount_usd == 25.00
+    print("✓ Non-member transaction parsed cleanly")
+
+
 if __name__ == "__main__":
     print("Running ABA PayWay feature tests...")
     test_parser_exact_sample()
     test_parser_khr()
     test_name_tokens_matching()
     test_receipt_formatting()
+    test_non_member_handling()
     print("🎉 All PayWay tests passed!")
+
