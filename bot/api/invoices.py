@@ -9,6 +9,7 @@ re-sending to the Telegram group is admin-only.
 
 import logging
 from typing import Any, Dict, List, Optional
+from pydantic import BaseModel
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
@@ -210,3 +211,61 @@ async def resend_invoice(
         sent_by=user_id,
     )
     return {"ok": True, "sent_count": inv["sent_count"] + 1}
+
+
+class MarkPaidRequest(BaseModel):
+    user_id: Optional[str] = ""
+    user_name: Optional[str] = ""
+    paid: bool = True
+    paid_amount: Optional[float] = None
+
+
+class MarkPaidBulkRequest(BaseModel):
+    invoice_ids: List[str]
+    user_id: Optional[str] = ""
+    user_name: Optional[str] = ""
+    paid: bool = True
+
+
+@router.post("/{invoice_id}/mark-paid")
+async def mark_invoice_person_paid(
+    invoice_id: str,
+    body: MarkPaidRequest,
+    auth: dict = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Admin-only: Mark or unmark a specific person's lunch debt as PAID in an invoice."""
+    names = name_variants(username=body.user_name or "", full_name=body.user_name or "")
+    success = await sheets_invoices.set_member_paid_status(
+        invoice_id=invoice_id,
+        user_id=body.user_id or "",
+        user_names=names,
+        is_paid=body.paid,
+        payment_id=f"ADMIN_{caller_user_id(auth)}",
+        paid_amount=body.paid_amount,
+    )
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Failed to update invoice paid status (invoice or user not found)",
+        )
+    return {"ok": True, "invoice_id": invoice_id, "paid": body.paid}
+
+
+@router.post("/mark-paid-bulk")
+async def mark_invoices_bulk_paid(
+    body: MarkPaidBulkRequest,
+    auth: dict = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Admin-only: Bulk mark or unmark a specific user across multiple invoices."""
+    names = name_variants(username=body.user_name or "", full_name=body.user_name or "")
+    updated_count = 0
+    for inv_id in body.invoice_ids:
+        if await sheets_invoices.set_member_paid_status(
+            invoice_id=inv_id,
+            user_id=body.user_id or "",
+            user_names=names,
+            is_paid=body.paid,
+            payment_id=f"ADMIN_{caller_user_id(auth)}",
+        ):
+            updated_count += 1
+    return {"ok": True, "updated_count": updated_count, "paid": body.paid}

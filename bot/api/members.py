@@ -15,9 +15,11 @@ from typing import Any, Dict, List, Optional, Set
 
 from fastapi import APIRouter, Depends, Query
 
+from ..people import is_same_person, name_variants
+from ..sheets import invoices as sheets_invoices
 from ..sheets import repo
 from ..sheets.client import is_configured
-from .auth import caller_chat_id, caller_user_id, require_member
+from .auth import caller_chat_id, caller_user_id, require_admin, require_member
 
 router = APIRouter(prefix="/members", tags=["members"])
 
@@ -182,6 +184,8 @@ async def list_members(
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=ACTIVITY_WINDOW_DAYS)
 
+    all_invoices = await sheets_invoices.list_all()
+
     out: List[Dict[str, Any]] = []
     for u in users:
         uid = str(u.get("user_id", "")).strip()
@@ -206,6 +210,30 @@ async def list_members(
         full_name = (u.get("full_name") or "").strip()
         username = (u.get("username") or "").strip()
         is_admin = str(u.get("role", "")).strip().upper() == "ADMIN"
+
+        # Calculate remaining unpaid debt and total spending for this user
+        u_names = name_variants(username=username, full_name=full_name)
+        total_spend = 0.0
+        unpaid_debt = 0.0
+        paid_spend = 0.0
+        unpaid_invoices_count = 0
+
+        for inv in all_invoices:
+            for d in inv.get("details") or []:
+                if is_same_person(d.get("user_id"), d.get("user_name"), uid, u_names):
+                    subtotal = float(d.get("subtotal") or 0.0)
+                    is_paid = bool(d.get("paid"))
+                    paid_amt = float(d.get("paid_amount") or 0.0) if not is_paid else subtotal
+                    due = round(max(0.0, subtotal - paid_amt), 2)
+                    total_spend += subtotal
+                    if is_paid:
+                        paid_spend += subtotal
+                    else:
+                        paid_spend += paid_amt
+                        if due > 0.009:
+                            unpaid_debt += due
+                            unpaid_invoices_count += 1
+
         out.append({
             "user_id": uid,
             "name": full_name or username or f"User{uid}",
@@ -215,6 +243,10 @@ async def list_members(
             "role": "Admin" if is_admin else "Member",
             "status": "Active" if is_active else "Inactive",
             "last_active_at": latest.isoformat() if latest else "",
+            "unpaid_debt": round(unpaid_debt, 2),
+            "total_spend": round(total_spend, 2),
+            "paid_spend": round(paid_spend, 2),
+            "unpaid_invoices_count": unpaid_invoices_count,
         })
 
     # Active first, then by name.
@@ -261,5 +293,92 @@ async def update_member(
         "name": str(row.get("full_name", "")),
         "bank_name": str(row.get("bank_name", "")),
         "role": str(row.get("role", "")),
+    }
+
+
+class SettleBulkMembersRequest(BaseModel):
+    user_ids: List[str]
+
+
+@router.post("/{user_id}/settle")
+async def settle_member_debt(
+    user_id: str,
+    auth: dict = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Admin-only: Settle all unpaid lunch invoices for a specific member."""
+    user_row = await repo.find_by_pk("user", str(user_id)) if is_configured() else {}
+    username = str((user_row.get("username", "") if user_row else "") or "")
+    full_name = str((user_row.get("full_name", "") if user_row else "") or "")
+    names = name_variants(username=username, full_name=full_name)
+
+    all_invoices = await sheets_invoices.list_all()
+    settled_invoices_count = 0
+    total_settled_amount = 0.0
+
+    for inv in all_invoices:
+        inv_id = inv["invoice_id"]
+        for d in inv.get("details") or []:
+            if is_same_person(d.get("user_id"), d.get("user_name"), str(user_id), names):
+                if not d.get("paid"):
+                    subtotal = float(d.get("subtotal") or 0.0)
+                    paid_amt = float(d.get("paid_amount") or 0.0)
+                    due = max(0.0, subtotal - paid_amt)
+                    await sheets_invoices.set_member_paid_status(
+                        invoice_id=inv_id,
+                        user_id=str(user_id),
+                        user_names=names,
+                        is_paid=True,
+                        payment_id=f"ADMIN_{caller_user_id(auth)}",
+                    )
+                    settled_invoices_count += 1
+                    total_settled_amount += due
+
+    return {
+        "ok": True,
+        "user_id": user_id,
+        "settled_invoices_count": settled_invoices_count,
+        "settled_amount": round(total_settled_amount, 2),
+    }
+
+
+@router.post("/settle-bulk")
+async def settle_bulk_members(
+    body: SettleBulkMembersRequest,
+    auth: dict = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Admin-only: Settle all unpaid lunch invoices for multiple members in bulk."""
+    total_settled_count = 0
+    total_settled_amount = 0.0
+
+    for uid in body.user_ids:
+        user_row = await repo.find_by_pk("user", str(uid)) if is_configured() else {}
+        username = str((user_row.get("username", "") if user_row else "") or "")
+        full_name = str((user_row.get("full_name", "") if user_row else "") or "")
+        names = name_variants(username=username, full_name=full_name)
+
+        all_invoices = await sheets_invoices.list_all()
+        for inv in all_invoices:
+            inv_id = inv["invoice_id"]
+            for d in inv.get("details") or []:
+                if is_same_person(d.get("user_id"), d.get("user_name"), str(uid), names):
+                    if not d.get("paid"):
+                        subtotal = float(d.get("subtotal") or 0.0)
+                        paid_amt = float(d.get("paid_amount") or 0.0)
+                        due = max(0.0, subtotal - paid_amt)
+                        await sheets_invoices.set_member_paid_status(
+                            invoice_id=inv_id,
+                            user_id=str(uid),
+                            user_names=names,
+                            is_paid=True,
+                            payment_id=f"ADMIN_{caller_user_id(auth)}",
+                        )
+                        total_settled_count += 1
+                        total_settled_amount += due
+
+    return {
+        "ok": True,
+        "settled_users_count": len(body.user_ids),
+        "settled_invoices_count": total_settled_count,
+        "settled_amount": round(total_settled_amount, 2),
     }
 

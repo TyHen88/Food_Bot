@@ -194,3 +194,45 @@ async def mark_member_paid(
         })
     return updated
 
+
+async def set_member_paid_status(
+    invoice_id: str,
+    user_id: str,
+    user_names: set,
+    *,
+    is_paid: bool = True,
+    payment_id: str = "MANUAL_ADMIN",
+    paid_amount: Optional[float] = None,
+) -> bool:
+    """Explicitly mark or unmark a user's subtotal in an invoice as PAID or UNPAID."""
+    if not is_configured():
+        return False
+    row = await repo.find_by_pk("invoice", str(invoice_id))
+    if not row:
+        return False
+
+    from ..people import is_same_person
+    details = _parse_details(row.get("details"))
+    updated = False
+    now = repo.now_iso()
+
+    for d in details:
+        if is_same_person(d.get("user_id"), d.get("user_name"), user_id, user_names):
+            subtotal = float(d.get("subtotal") or 0.0)
+            d["paid"] = is_paid
+            if is_paid:
+                d["paid_at"] = now
+                d["payment_id"] = payment_id
+                d["paid_amount"] = paid_amount if paid_amount is not None else subtotal
+            else:
+                d["paid_at"] = ""
+                d["payment_id"] = ""
+                d["paid_amount"] = 0.0
+            updated = True
+
+    if updated:
+        await repo.update("invoice", str(invoice_id), {
+            "details": json.dumps(details, ensure_ascii=False)
+        })
+    return updated
+
