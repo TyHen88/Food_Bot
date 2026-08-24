@@ -157,13 +157,7 @@ def format_receipt_message(
             lines.append(f"  {status_icon} <b>{s['date']}:</b> ${s['amount']:.2f} ({s['status']})")
     else:
         lines.append("")
-        lines.append("ℹ️ <i>Payment recorded (no pending lunch debt found).</i>")
-
-    lines.append("")
-    if remaining_balance <= 0.009:
-        lines.append("🎉 <b>Outstanding balance:</b> $0.00 (Fully Settled)")
-    else:
-        lines.append(f"⚠️ <b>Remaining unpaid balance:</b> ${remaining_balance:.2f}")
+        lines.append("ℹ️ <i>Payment recorded.</i>")
 
     return "\n".join(lines)
 
