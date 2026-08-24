@@ -27,10 +27,29 @@ class PayWayTransaction:
     raw_text: str
 
 
+_KHMER_DIGITS_MAP = str.maketrans("០១២៣៤៥៦៧៨៩", "0123456789")
+
+
+def _clean_text(text: str) -> str:
+    """Strip zero-width spaces, normalize non-breaking spaces and line breaks."""
+    if not text:
+        return ""
+    t = (
+        text.replace("\u200b", "")
+        .replace("\u200c", "")
+        .replace("\u200d", "")
+        .replace("\ufeff", "")
+        .replace("\u00a0", " ")
+        .replace("\r\n", " ")
+        .replace("\n", " ")
+        .strip()
+    )
+    return t
+
+
 # Regex for USD: $0.10 or $1,234.50
-# Regex for KHR: 4,000 KHR or KHR 4,000 or ៛4,000
 _USD_PATTERN = re.compile(
-    r"^\$(?P<amount>\d+(?:,\d{3})*(?:\.\d{1,2})?)\s+"
+    r"^\$(?P<amount>[\d\u17e0-\u17e9]+(?:,[\d\u17e0-\u17e9]{3})*(?:\.[\d\u17e0-\u17e9]{1,2})?)\s+"
     r"paid\s+by\s+(?P<sender>.+?)(?:\s*\((?P<mask>\*[0-9A-Za-z]+|\d+)\))?\s+"
     r"on\s+(?P<date>.+?)\s+"
     r"via\s+(?P<method>.+?)\s+"
@@ -40,8 +59,9 @@ _USD_PATTERN = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+# Regex for KHR: 4,000 KHR or KHR 4,000 or ៛4,000 or ៛100 or 100៛
 _KHR_PATTERN = re.compile(
-    r"^(?:(?:KHR|៛)\s*)?(?P<amount>\d+(?:,\d{3})*(?:\.\d{1,2})?)(?:\s*(?:KHR|៛))?\s+"
+    r"^(?:(?:KHR|៛|riel|riels)\s*)?(?P<amount>[\d\u17e0-\u17e9]+(?:,[\d\u17e0-\u17e9]{3})*(?:\.[\d\u17e0-\u17e9]{1,2})?)(?:\s*(?:KHR|៛|riel|riels))?\s+"
     r"paid\s+by\s+(?P<sender>.+?)(?:\s*\((?P<mask>\*[0-9A-Za-z]+|\d+)\))?\s+"
     r"on\s+(?P<date>.+?)\s+"
     r"via\s+(?P<method>.+?)\s+"
@@ -53,7 +73,7 @@ _KHR_PATTERN = re.compile(
 
 # Generic fallback pattern if structure has minor punctuation differences
 _GENERIC_PATTERN = re.compile(
-    r"(?P<amount_raw>[\$\d\.,\s]+(?:USD|KHR|៛)?)\s+"
+    r"(?P<amount_raw>[\$\d\u17e0-\u17e9\.,\s]+(?:USD|KHR|៛|riel|riels)?)\s+"
     r"paid\s+by\s+(?P<sender>[^\n\r]+?)(?:\s*\((?P<mask>\*[0-9A-Za-z]+|\d+)\))?\s+"
     r"on\s+(?P<date>[^\n\r]+?)\s+"
     r"via\s+(?P<method>[^\n\r]+?)\s+"
@@ -67,8 +87,8 @@ def is_payway_text(text: str) -> bool:
     """Check if message is an ABA PayWay payment notification."""
     if not text:
         return False
-    t = text.strip()
-    return "paid by" in t.lower() and ("trx. id" in t.lower() or "transaction id" in t.lower())
+    t = _clean_text(text).lower()
+    return "paid by" in t and ("trx. id" in t or "trx id" in t or "transaction id" in t or "trx.id" in t)
 
 
 def parse_payway_transaction(text: str, usd_khr_rate: float = 4000.0) -> Optional[PayWayTransaction]:
@@ -79,7 +99,7 @@ def parse_payway_transaction(text: str, usd_khr_rate: float = 4000.0) -> Optiona
     if not is_payway_text(text):
         return None
 
-    cleaned_text = text.strip().replace("\r\n", " ").replace("\n", " ")
+    cleaned_text = _clean_text(text)
 
     # Try USD match
     m = _USD_PATTERN.search(cleaned_text)

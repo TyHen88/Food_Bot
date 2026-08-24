@@ -134,12 +134,18 @@ def format_receipt_message(
     username = f" (@{user['username']})" if user.get("username") else ""
     mask_str = f" ({tx.account_mask})" if tx.account_mask else ""
 
+    paid_formatted = (
+        f"{int(tx.amount):,} ៛ (≈ ${tx.amount_usd:.2f})"
+        if tx.currency == "KHR"
+        else f"${tx.amount_usd:.2f}"
+    )
+
     lines = [
         "✅ <b>Payment Received!</b> (ABA PayWay)",
         "━━━━━━━━━━━━━━━━━━━━━━",
         f"👤 <b>Member:</b> {display_name}{username}",
         f"🏦 <b>Sender:</b> {tx.sender_name}{mask_str}",
-        f"💵 <b>Paid:</b> ${tx.amount_usd:.2f} ({tx.currency} via {tx.payment_method})",
+        f"💵 <b>Paid:</b> {paid_formatted} via {tx.payment_method}",
         f"🔢 <b>Trx ID:</b> <code>{tx.trx_id}</code>",
     ]
 

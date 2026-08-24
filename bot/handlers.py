@@ -175,7 +175,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     logger.info(f"Received message text: {repr(text)}")
 
     if is_payway_text(text):
-        tx = parse_payway_transaction(text)
+        rate = 4000.0
+        try:
+            curr_rate = await exchange.current()
+            if curr_rate and curr_rate.get("usd_khr"):
+                rate = float(curr_rate["usd_khr"])
+        except Exception:
+            pass
+        tx = parse_payway_transaction(text, usd_khr_rate=rate)
         if tx:
             logger.info(f"Processing PayWay transaction: {tx.trx_id} from {tx.sender_name} (${tx.amount_usd})")
             chat = update.effective_chat

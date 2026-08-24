@@ -49,6 +49,20 @@ def test_parser_khr():
     assert tx.trx_id == "987654321"
     print("✓ KHR sample parsed successfully")
 
+    # Test user's exact Riel sample:
+    text_riel = "៛100 paid by HEN TY (*329) on Aug 24, 02:26 PM via ABA PAY at HOURT VONGSA. Trx. ID: 178755637145232, APV: 942001."
+    assert is_payway_text(text_riel)
+    tx_riel = parse_payway_transaction(text_riel, usd_khr_rate=4000.0)
+    print("tx_riel result:", tx_riel)
+    assert tx_riel is not None
+    assert tx_riel.amount == 100.0
+    assert tx_riel.currency == "KHR"
+    assert tx_riel.sender_name == "HEN TY"
+    assert tx_riel.trx_id == "178755637145232"
+    assert tx_riel.apv == "942001"
+    print("✓ Exact ៛100 sample parsed successfully")
+
+
 
 def test_name_tokens_matching():
     # Test token matching for reversed names
