@@ -162,8 +162,9 @@ async def mark_member_paid(
     *,
     payment_id: str = "",
     paid_amount: float = 0.0,
+    is_fully_paid: bool = True,
 ) -> bool:
-    """Mark a specific user's subtotal in an invoice as PAID."""
+    """Mark a specific user's subtotal in an invoice as PAID or PARTIAL."""
     if not is_configured():
         return False
     row = await repo.find_by_pk("invoice", str(invoice_id))
@@ -177,13 +178,14 @@ async def mark_member_paid(
 
     for d in details:
         if is_same_person(d.get("user_id"), d.get("user_name"), user_id, user_names):
-            d["paid"] = True
+            subtotal = float(d.get("subtotal") or 0.0)
+            prev_paid = float(d.get("paid_amount") or 0.0) if not d.get("paid") else 0.0
+            new_paid_total = round(prev_paid + paid_amount, 2) if paid_amount else subtotal
+
+            d["paid"] = bool(is_fully_paid or (new_paid_total >= (subtotal - 0.05)))
             d["paid_at"] = now
             d["payment_id"] = payment_id
-            if paid_amount:
-                d["paid_amount"] = paid_amount
-            else:
-                d["paid_amount"] = float(d.get("subtotal") or 0)
+            d["paid_amount"] = new_paid_total
             updated = True
 
     if updated:

@@ -221,11 +221,17 @@ async def process_transaction_settlement(tx: PayWayTransaction) -> Dict[str, Any
     remaining_funds = tx.amount_usd
     settled_list = []
 
+    tolerance = 0.05 if tx.currency == "KHR" else 0.01
+
     for item in unpaid_orders:
         if remaining_funds <= 0.001:
             break
         due = item["due"]
+        is_fully_paid = (remaining_funds + tolerance) >= due
         pay_amount = min(remaining_funds, due)
+
+        if is_fully_paid and remaining_funds < due:
+            pay_amount = due
 
         # Mark as paid in Google Sheets invoice tab
         await sheets_invoices.mark_member_paid(
@@ -234,15 +240,16 @@ async def process_transaction_settlement(tx: PayWayTransaction) -> Dict[str, Any
             names,
             payment_id=tx.trx_id,
             paid_amount=pay_amount,
+            is_fully_paid=is_fully_paid,
         )
 
         settled_list.append({
             "order_id": item["invoice_id"],
             "date": item["order_date"],
             "amount": pay_amount,
-            "status": "PAID" if pay_amount >= (due - 0.009) else "PARTIAL",
+            "status": "PAID" if is_fully_paid else "PARTIAL",
         })
-        remaining_funds -= pay_amount
+        remaining_funds = max(0.0, remaining_funds - pay_amount)
 
     # 4. Save payment record
     payment = await sheets_payments.create_payment(

@@ -69,16 +69,14 @@ def name_variants(
 
 
 def is_same_person(entry_uid: Any, entry_name: Any, uid: Any, names: Set[str]) -> bool:
-    """Does an order-item / invoice-detail entry belong to `uid`?
-
-    An entry that carries a user_id is matched on it alone — a name match
-    must never override a user_id that says otherwise.
-    """
+    """Does an order-item / invoice-detail entry belong to `uid` or `names`?"""
     euid = str(entry_uid or "").strip()
-    if euid:
-        target = str(uid or "").strip()
-        return bool(target) and euid == target
-    return norm_name(entry_name) in names
+    target = str(uid or "").strip()
+    if euid and target and euid == target:
+        return True
+    if names and norm_name(entry_name) in names:
+        return True
+    return False
 
 
 def build_uid_index(entries: Iterable[Tuple[Any, Any]]) -> Dict[str, Optional[str]]:
