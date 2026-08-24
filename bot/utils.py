@@ -24,16 +24,18 @@ async def with_retry(func, *args, max_retries: int = 3, **kwargs):
             logger.warning(f"Network error: {e}. Retrying in {2**attempt} seconds...")
             await asyncio.sleep(2**attempt)
 
-# Khmer digits ១-៦ plus Arabic 1-6
-# The (?!\)) lookahead rejects a digit immediately followed by ")", so the
-# bot's own order summary \u2014 which lists items as "1) item x 1" \u2014 isn't
-# mistaken for a menu when a user re-sends it. Real menus use "1. x" / "1 x".
-_NUMERAL_PATTERN = re.compile(r"^[\u17e1\u17e2\u17e3\u17e4\u17e5\u17e61-6](?!\))\.?\s*")
+# Khmer digits ១-១០ plus Arabic 1-10
+# The negative lookahead rejects digits immediately followed by ")" or more digits,
+# so summary lists like "1) item x 1" or larger numbers (11+) aren't mistaken
+# for 1-10 menu items. Real menus use "1. x" / "1 x" / "១០. x".
+_NUMERAL_PATTERN = re.compile(
+    r"^(?:10|\u17e1\u17e0|[1-9\u17e1-\u17e9])(?![\d\u17e0-\u17e9\)])\.?\s*"
+)
 
 def extract_menu_options(text: str) -> List[str]:
     """Extract menu options from text.
 
-    Accepts lines starting with a Khmer or Arabic numeral (1-6),
+    Accepts lines starting with a Khmer or Arabic numeral (1-10),
     followed by an optional dot and any amount of whitespace.
     Works for both '1. Option' and '1 Option' formats.
     """
@@ -45,7 +47,7 @@ def extract_menu_options(text: str) -> List[str]:
             option_text = line[m.end():].strip()
             if option_text and option_text not in options:
                 options.append(option_text)
-    return options
+    return options[:10]
 
 def is_food_menu_text(text: str) -> bool:
     """Check if text appears to be a food menu.

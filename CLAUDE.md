@@ -46,11 +46,11 @@ One Python process runs three things in a single event loop, all wired up in [ma
 **Other module roles:**
 - [bot/handlers.py](bot/handlers.py) — all command/message/callback/poll handlers, registered via `setup_handlers(app)`. Commands: `/start`, `/subscribe`, `/unsubscribe`, `/debug_send`, `/debug_qr`, `/vongsa`, `/ty`, `/app`, plus admin-only `/admin`, `/set`, `/schedule_list`, `/schedule_enable`, `/schedule_disable`.
 - [bot/menu_processor.py](bot/menu_processor.py) — menu text → poll creation, writes `poll` rows.
-- [bot/utils.py](bot/utils.py) — `is_food_menu_text` / `extract_menu_options` (regex over Khmer digits ១–៦ and Arabic 1–6), `with_retry`, `format_order_summary`.
+- [bot/utils.py](bot/utils.py) — `is_food_menu_text` / `extract_menu_options` (regex over Khmer digits ១–១០ and Arabic 1–10), `with_retry`, `format_order_summary`.
 - [bot/config.py](bot/config.py) — env-var loading only (`load_dotenv()` at import; raises if `BOT_TOKEN` missing). Runtime-tunable values live in the `setting` tab (global) with per-chat overrides in `chat_setting`.
 - [simple_bot.py](simple_bot.py) — self-contained ancient version, **not wired into main.py**. Don't edit it expecting changes to take effect.
 
-**Menu detection rule** ([bot/utils.py](bot/utils.py)): a message is a menu if it starts with `ម្ហូបថ្ងៃ` OR contains ≥2 lines beginning with a Khmer/Arabic numeral 1–6. The numeral regex is capped at 6 — supporting more items means widening `_NUMERAL_PATTERN`.
+**Menu detection rule** ([bot/utils.py](bot/utils.py)): a message is a menu if it starts with `ម្ហូបថ្ងៃ` OR contains ≥2 lines beginning with a Khmer/Arabic numeral 1–10. The numeral regex is capped at 10 (Telegram native poll limit).
 
 **Asset paths** resolve relative to the package, not CWD: QR images in [assets/](assets/), referenced via `Path(__file__).parent.parent / "assets"`.
 
