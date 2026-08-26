@@ -8,7 +8,8 @@ re-sending to the Telegram group is admin-only.
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+import math
+from typing import Any, Dict, List, Optional, Union
 from pydantic import BaseModel
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -65,9 +66,6 @@ def _my_amount_and_paid(details: List[Dict[str, Any]], caller_id: str, caller_na
             paid = False
     return round(total, 2), (paid if found else False)
 
-
-import math
-from typing import Any, Dict, List, Optional, Union
 
 @router.get("")
 async def list_invoices(

@@ -11,7 +11,7 @@ votes yet fall back to comparing against `last_active_at`.
 
 import json
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Union
 
 from fastapi import APIRouter, Depends, Query
 
