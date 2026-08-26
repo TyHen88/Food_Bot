@@ -4,6 +4,7 @@ Message and callback handlers for the Telegram Food Poll Bot.
 
 import logging
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
 
 from telegram import (
     InlineKeyboardButton,
