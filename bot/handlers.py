@@ -2,9 +2,12 @@
 Message and callback handlers for the Telegram Food Poll Bot.
 """
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
+
+import telegram.error
 
 from telegram import (
     InlineKeyboardButton,
@@ -595,13 +598,24 @@ async def handle_pay_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         if qr_path and qr_path.exists():
             logger.info(f"Sending /vongsa QR from {qr_path} (size: {qr_path.stat().st_size} bytes)")
-            with open(qr_path, "rb") as photo:
-                await context.bot.send_photo(
-                    chat_id=chat_id,
-                    photo=photo,
-                    caption=pay_message,
-                    parse_mode="Markdown",
-                )
+            for attempt in range(2):
+                try:
+                    with open(qr_path, "rb") as photo:
+                        await context.bot.send_photo(
+                            chat_id=chat_id,
+                            photo=photo,
+                            caption=pay_message,
+                            parse_mode="Markdown",
+                            read_timeout=60.0,
+                            write_timeout=60.0,
+                        )
+                    break
+                except telegram.error.TimedOut:
+                    if attempt == 0:
+                        logger.warning("Timed out sending /vongsa QR, retrying once...")
+                        await asyncio.sleep(1)
+                        continue
+                    raise
         else:
             await update.message.reply_text("QR image not found.")
             logger.warning(f"QR image not found for /vongsa in possible asset directories")
@@ -623,19 +637,31 @@ async def handle_ty_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     try:
         if qr_path and qr_path.exists():
-            with open(qr_path, "rb") as photo:
-                await context.bot.send_photo(
-                    chat_id=chat_id,
-                    photo=photo,
-                    caption=pay_message,
-                    parse_mode="Markdown",
-                )
+            logger.info(f"Sending /ty QR from {qr_path} (size: {qr_path.stat().st_size} bytes)")
+            for attempt in range(2):
+                try:
+                    with open(qr_path, "rb") as photo:
+                        await context.bot.send_photo(
+                            chat_id=chat_id,
+                            photo=photo,
+                            caption=pay_message,
+                            parse_mode="Markdown",
+                            read_timeout=60.0,
+                            write_timeout=60.0,
+                        )
+                    break
+                except telegram.error.TimedOut:
+                    if attempt == 0:
+                        logger.warning("Timed out sending /ty QR, retrying once...")
+                        await asyncio.sleep(1)
+                        continue
+                    raise
         else:
             await update.message.reply_text("TY QR image not found.")
             logger.warning(f"TY QR image not found in {Path(__file__).parent.parent / 'assets'}")
         logger.info(f"/ty command used by user {update.effective_user.id}")
     except Exception as e:
-        logger.error(f"Error handling /ty command: {e}")
+        logger.error(f"Error handling /ty command: {e}", exc_info=True)
         await update.message.reply_text("Could not send payment info right now.")
 
 

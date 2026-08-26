@@ -225,7 +225,11 @@ async def _send_qr_photo_to_all(bot: Bot, payload: str = "payment_qr.png", targe
             if qr_path and qr_path.exists():
                 with open(qr_path, "rb") as photo:
                     await bot.send_photo(
-                        chat_id=chat_id, photo=photo, caption=VONGSA_QR_CAPTION,
+                        chat_id=chat_id,
+                        photo=photo,
+                        caption=VONGSA_QR_CAPTION,
+                        read_timeout=60.0,
+                        write_timeout=60.0,
                     )
             else:
                 await bot.send_message(

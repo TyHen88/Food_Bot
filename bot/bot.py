@@ -83,12 +83,12 @@ def build_application() -> Application:
 
     # Increase connect / read timeouts beyond the 5 s default.
     # The local network can reach api.telegram.org but TLS handshake can
-    # take > 5 s on first connect; 30 s covers any realistic latency.
+    # take > 5 s on first connect; 60 s covers media uploads and realistic latency.
     request = HTTPXRequest(
         connect_timeout=30,
-        read_timeout=30,
-        write_timeout=30,
-        pool_timeout=30,
+        read_timeout=60,
+        write_timeout=60,
+        pool_timeout=60,
         http_version="1.1",
     )
 
