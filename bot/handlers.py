@@ -554,8 +554,13 @@ async def handle_debug_qr_command(update: Update, context: ContextTypes.DEFAULT_
 
 
 def _find_qr_path(base_name: str) -> Optional[Path]:
-    """Find a QR asset path by name, supporting .jpg, .png, .jpeg, .webp extensions."""
-    assets_dir = Path(__file__).parent.parent / "assets"
+    """Find a QR asset path by name, supporting .jpg, .png, .jpeg, .webp extensions across potential asset dirs."""
+    possible_dirs = [
+        Path(__file__).resolve().parent.parent / "assets",
+        Path.cwd() / "assets",
+        Path.cwd() / "backend" / "assets",
+        Path("/app/assets"),
+    ]
     stem = Path(base_name).stem
     candidates = [
         base_name,
@@ -564,10 +569,15 @@ def _find_qr_path(base_name: str) -> Optional[Path]:
         f"{stem}.jpeg",
         f"{stem}.webp",
     ]
-    for c in candidates:
-        p = assets_dir / c
-        if p.is_file():
-            return p
+    for d in possible_dirs:
+        try:
+            if d.is_dir():
+                for c in candidates:
+                    p = d / c
+                    if p.is_file():
+                        return p
+        except Exception:
+            continue
     return None
 
 
@@ -583,6 +593,7 @@ async def handle_pay_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     try:
         if qr_path and qr_path.exists():
+            logger.info(f"Sending /vongsa QR from {qr_path} (size: {qr_path.stat().st_size} bytes)")
             with open(qr_path, "rb") as photo:
                 await context.bot.send_photo(
                     chat_id=chat_id,
@@ -592,10 +603,10 @@ async def handle_pay_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 )
         else:
             await update.message.reply_text("QR image not found.")
-            logger.warning(f"QR image not found for /vongsa in {Path(__file__).parent.parent / 'assets'}")
+            logger.warning(f"QR image not found for /vongsa in possible asset directories")
         logger.info(f"/vongsa command used by user {update.effective_user.id}")
     except Exception as e:
-        logger.error(f"Error handling /vongsa command: {e}")
+        logger.error(f"Error handling /vongsa command: {e}", exc_info=True)
         await update.message.reply_text("Could not send payment info right now.")
 
 
