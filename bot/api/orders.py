@@ -140,6 +140,8 @@ def _shape_order(
     }
 
 
+import math
+
 @router.get("")
 async def list_orders(
     date_from: Optional[str] = Query(None, alias="from",
@@ -148,15 +150,14 @@ async def list_orders(
                                    description="Inclusive YYYY-MM-DD upper bound on order_date."),
     date: Optional[str] = Query(None, description="Single-day shorthand (YYYY-MM-DD)."),
     chat_id: Optional[str] = Query(None, description="Restrict to one chat's orders."),
+    page: Optional[int] = Query(None, ge=1, description="Page number for pagination."),
+    page_size: int = Query(10, ge=1, le=100, description="Items per page."),
+    user_id: Optional[str] = Query(None, description="Filter orders containing this user_id."),
+    my_only: bool = Query(False, description="Filter orders containing the caller."),
+    search: Optional[str] = Query(None, description="Search term for dish name, chat title, or question."),
     auth: dict = Depends(require_member),
-) -> List[Dict[str, Any]]:
-    """Orders in a date range, annotated for the calendar. Role-aware.
-
-    When `chat_id` is given (the Mini App launched from a group passes it via
-    ?startapp=<chat_id>), only that chat's orders are returned. If it's absent
-    (e.g. opened from the bot DM), we scope to every chat the caller takes
-    part in — never other groups' orders.
-    """
+) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
+    """Orders in a date range, annotated for the calendar. Supports pagination, search, and user filtering."""
     if date and not (date_from or date_to):
         date_from = date_to = date
 
@@ -174,12 +175,16 @@ async def list_orders(
         # leaking another group's orders.
         if not auth.get("is_admin") and wanted != auth_chat:
             if wanted not in await user_chats(caller_user_id(auth)):
+                if page is not None:
+                    return {"items": [], "total": 0, "page": page, "page_size": page_size, "total_pages": 0}
                 return []
         rows = [r for r in rows if str(r.get("chat_id", "")).strip() == wanted]
     elif not auth.get("is_admin"):
         my_chats = await user_chats(caller_user_id(auth))
         rows = [r for r in rows if str(r.get("chat_id", "")).strip() in my_chats]
     if not rows:
+        if page is not None:
+            return {"items": [], "total": 0, "page": page, "page_size": page_size, "total_pages": 0}
         return []
 
     titles = await _chat_titles()
@@ -194,6 +199,51 @@ async def list_orders(
         }
         for row in rows
     ]
+
+    # Filter for specific user if requested
+    target_user_id = caller_user_id(auth) if my_only else (str(user_id).strip() if user_id else None)
+    if target_user_id:
+        def has_user(ord_dict: Dict[str, Any]) -> bool:
+            if str(ord_dict.get("paid_by", {}).get("user_id", "")).strip() == target_user_id:
+                return True
+            for it in ord_dict.get("items", []):
+                if str(it.get("user_id", "")).strip() == target_user_id:
+                    return True
+            return False
+        out = [ord_item for ord_item in out if has_user(ord_item)]
+
+    # Search filter
+    if search and search.strip():
+        q = search.strip().lower()
+        def matches_search(ord_dict: Dict[str, Any]) -> bool:
+            if q in (ord_dict.get("chat_title") or "").lower():
+                return True
+            if q in (ord_dict.get("question") or "").lower():
+                return True
+            if q in (ord_dict.get("paid_by", {}).get("username") or "").lower():
+                return True
+            for it in ord_dict.get("items", []):
+                if q in (it.get("item_name") or it.get("name") or "").lower():
+                    return True
+            return False
+        out = [ord_item for ord_item in out if matches_search(ord_item)]
+
+    # Sort order: if paginating, default to newest first; otherwise chronological (calendar view)
+    if page is not None:
+        out.sort(key=lambda r: (r.get("order_date") or "", r.get("created_at") or ""), reverse=True)
+        total_orders = len(out)
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        paged_items = out[start_idx:end_idx]
+        total_pages = math.ceil(total_orders / page_size) if total_orders > 0 else 1
+        return {
+            "items": paged_items,
+            "total": total_orders,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages,
+        }
+
     out.sort(key=lambda r: (r.get("order_date") or "", r.get("created_at") or ""))
     return out
 

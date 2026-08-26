@@ -132,7 +132,7 @@ def format_receipt_message(
     """Format Telegram receipt message to post in group chat."""
     display_name = user.get("full_name") or user.get("username") or tx.sender_name
     username = f" (@{user['username']})" if user.get("username") else ""
-    mask_str = f" ({tx.account_mask})" if tx.account_mask else ""
+    receiver = tx.merchant or "HEN TY"
 
     paid_formatted = (
         f"{int(tx.amount):,} ៛ (≈ ${tx.amount_usd:.2f})"
@@ -144,9 +144,8 @@ def format_receipt_message(
         "✅ <b>Payment Received!</b> (ABA PayWay)",
         "━━━━━━━━━━━━━━━━━━━━━━",
         f"👤 <b>Member:</b> {display_name}{username}",
-        f"🏦 <b>Sender:</b> {tx.sender_name}{mask_str}",
+        f"🏦 <b>Receiver:</b> {receiver}",
         f"💵 <b>Paid:</b> {paid_formatted} via {tx.payment_method}",
-        f"🔢 <b>Trx ID:</b> <code>{tx.trx_id}</code>",
     ]
 
     if settled:
@@ -158,6 +157,11 @@ def format_receipt_message(
     else:
         lines.append("")
         lines.append("ℹ️ <i>Payment recorded.</i>")
+
+    rem = max(0.0, remaining_balance)
+    rem_text = f"${rem:.2f}" if rem > 0.009 else "$0.00"
+    lines.append("")
+    lines.append(f"💳 <b>Remaining:</b> {rem_text}")
 
     return "\n".join(lines)
 

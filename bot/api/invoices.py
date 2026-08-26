@@ -66,12 +66,20 @@ def _my_amount_and_paid(details: List[Dict[str, Any]], caller_id: str, caller_na
     return round(total, 2), (paid if found else False)
 
 
+import math
+from typing import Any, Dict, List, Optional, Union
+
 @router.get("")
 async def list_invoices(
     chat_id: Optional[str] = Query(None, description="Restrict to one chat's invoices."),
+    page: Optional[int] = Query(None, ge=1, description="Page number for pagination."),
+    page_size: int = Query(10, ge=1, le=100, description="Items per page."),
+    date_from: Optional[str] = Query(None, alias="from", description="Inclusive YYYY-MM-DD lower bound."),
+    date_to: Optional[str] = Query(None, alias="to", description="Inclusive YYYY-MM-DD upper bound."),
+    search: Optional[str] = Query(None, description="Search term for payer, chat title, or date."),
     auth: dict = Depends(require_member),
-) -> List[Dict[str, Any]]:
-    """Invoices newest-first, without the full breakdown (see detail)."""
+) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
+    """Invoices newest-first, without the full breakdown (see detail). Supports pagination & filtering."""
     auth_chat = caller_chat_id(auth)
     if not chat_id:
         chat_id = auth_chat
@@ -82,6 +90,8 @@ async def list_invoices(
     if chat_id:
         wanted = str(chat_id).strip()
         if allowed is not None and wanted not in allowed:
+            if page is not None:
+                return {"items": [], "total": 0, "page": page, "page_size": page_size, "total_pages": 0, "stats": {"orders": 0, "amount": 0.0, "amount_khr": 0.0}}
             return []
         rows = [r for r in rows if r["chat_id"] == wanted]
     elif allowed is not None:
@@ -92,26 +102,75 @@ async def list_invoices(
     names = _caller_names(auth)
     out = []
     for r in rows:
+        order_date = str(r.get("order_date") or "")
+        if date_from and order_date < date_from:
+            continue
+        if date_to and order_date > date_to:
+            continue
+
         details = r.get("details") or []
         my_amount, my_paid = _my_amount_and_paid(details, caller_id, names)
         rate = r.get("usd_khr_rate") or 0
         paid_count = sum(1 for d in details if d.get("paid"))
         all_paid = bool(details and paid_count == len(details))
 
+        chat_title = titles.get(r["chat_id"], "")
+        total_val = float(r.get("total") or 0)
+        total_khr_val = exchange.to_khr(total_val, rate) if rate else None
+        my_amount_khr_val = exchange.to_khr(my_amount, rate) if rate else None
+
         out.append({
             **{k: v for k, v in r.items() if k != "details"},
-            "chat_title": titles.get(r["chat_id"], ""),
+            "chat_title": chat_title,
             "person_count": len(details),
             "paid_count": paid_count,
             "all_paid": all_paid,
             "my_amount": my_amount,
             "my_paid": my_paid,
             # Converted at the invoice's own pinned rate, never today's.
-            "my_amount_khr": exchange.to_khr(my_amount, rate) if rate else None,
-            "total_khr": exchange.to_khr(r.get("total") or 0, rate) if rate else None,
+            "my_amount_khr": my_amount_khr_val,
+            "total_khr": total_khr_val,
         })
+
     out.sort(key=lambda r: (r.get("order_date") or "", r.get("last_sent_at") or ""), reverse=True)
-    return out
+
+    filtered = out
+    if search and search.strip():
+        q = search.strip().lower()
+        filtered = [
+            inv for inv in out
+            if q in (inv.get("payer_name") or "").lower()
+            or q in (inv.get("chat_title") or "").lower()
+            or q in (inv.get("order_date") or "").lower()
+            or q in (inv.get("order_id") or "").lower()
+            or q in (inv.get("invoice_id") or "").lower()
+        ]
+
+    total_orders = len(filtered)
+    total_amount = sum(float(inv.get("total") or 0) for inv in filtered)
+    total_amount_khr = sum(float(inv.get("total_khr") or 0) for inv in filtered if inv.get("total_khr"))
+
+    stats_data = {
+        "orders": total_orders,
+        "amount": round(total_amount, 2),
+        "amount_khr": round(total_amount_khr, 2),
+    }
+
+    if page is not None:
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        paged_items = filtered[start_idx:end_idx]
+        total_pages = math.ceil(total_orders / page_size) if total_orders > 0 else 1
+        return {
+            "items": paged_items,
+            "total": total_orders,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages,
+            "stats": stats_data,
+        }
+
+    return filtered
 
 
 async def _get_visible_invoice(invoice_id: str, auth: dict) -> Dict[str, Any]:

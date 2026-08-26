@@ -101,7 +101,7 @@ def test_receipt_formatting():
     receipt = format_receipt_message(user, tx, settled, remaining_balance=0.0)
     assert "HEN TY" in receipt
     assert "Tii ♏️" in receipt
-    assert "178754626218875" in receipt
+    assert "Remaining:" in receipt
     assert "2026-08-15" in receipt
     assert "Settled Lunch Orders" in receipt
     print("✓ Receipt formatting works")

@@ -120,9 +120,14 @@ async def user_chats(user_id: str) -> Set[str]:
 @router.get("")
 async def list_members(
     chat_id: Optional[str] = Query(None, description="Restrict to one chat's participants."),
+    page: Optional[int] = Query(None, ge=1, description="Page number for pagination."),
+    page_size: int = Query(10, ge=1, le=100, description="Number of items per page."),
+    search: Optional[str] = Query(None, description="Search term for name, username, phone, or ID."),
     auth: dict = Depends(require_member),
-) -> List[Dict[str, Any]]:
+) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
     if not is_configured():
+        if page is not None:
+            return {"items": [], "total": 0, "page": page, "page_size": page_size, "total_pages": 0, "stats": {"total": 0, "admins": 0, "active": 0, "total_debt": 0.0}}
         return []
 
     users = await repo.list_all("user")
@@ -186,7 +191,30 @@ async def list_members(
 
     all_invoices = await sheets_invoices.list_all()
 
+    # Pre-extract invoice detail items once into parsed list to avoid nested re-parsing
+    parsed_invoice_details: List[Dict[str, Any]] = []
+    for inv in all_invoices:
+        for d in inv.get("details") or []:
+            d_uid = str(d.get("user_id", "")).strip()
+            d_uname = str(d.get("user_name", "")).strip()
+            subtotal = float(d.get("subtotal") or 0.0)
+            is_paid = bool(d.get("paid"))
+            paid_amt = float(d.get("paid_amount") or 0.0) if not is_paid else subtotal
+            due = round(max(0.0, subtotal - paid_amt), 2)
+            parsed_invoice_details.append({
+                "user_id": d_uid,
+                "user_name": d_uname,
+                "subtotal": subtotal,
+                "is_paid": is_paid,
+                "paid_amt": paid_amt,
+                "due": due,
+            })
+
     out: List[Dict[str, Any]] = []
+    total_group_debt = 0.0
+    total_admins = 0
+    total_active = 0
+
     for u in users:
         uid = str(u.get("user_id", "")).strip()
         if not uid:
@@ -211,6 +239,11 @@ async def list_members(
         username = (u.get("username") or "").strip()
         is_admin = str(u.get("role", "")).strip().upper() == "ADMIN"
 
+        if is_admin:
+            total_admins += 1
+        if is_active:
+            total_active += 1
+
         # Calculate remaining unpaid debt and total spending for this user
         u_names = name_variants(username=username, full_name=full_name)
         total_spend = 0.0
@@ -218,21 +251,22 @@ async def list_members(
         paid_spend = 0.0
         unpaid_invoices_count = 0
 
-        for inv in all_invoices:
-            for d in inv.get("details") or []:
-                if is_same_person(d.get("user_id"), d.get("user_name"), uid, u_names):
-                    subtotal = float(d.get("subtotal") or 0.0)
-                    is_paid = bool(d.get("paid"))
-                    paid_amt = float(d.get("paid_amount") or 0.0) if not is_paid else subtotal
-                    due = round(max(0.0, subtotal - paid_amt), 2)
-                    total_spend += subtotal
-                    if is_paid:
-                        paid_spend += subtotal
-                    else:
-                        paid_spend += paid_amt
-                        if due > 0.009:
-                            unpaid_debt += due
-                            unpaid_invoices_count += 1
+        for d in parsed_invoice_details:
+            if is_same_person(d["user_id"], d["user_name"], uid, u_names):
+                subtotal = d["subtotal"]
+                is_paid = d["is_paid"]
+                paid_amt = d["paid_amt"]
+                due = d["due"]
+                total_spend += subtotal
+                if is_paid:
+                    paid_spend += subtotal
+                else:
+                    paid_spend += paid_amt
+                    if due > 0.009:
+                        unpaid_debt += due
+                        unpaid_invoices_count += 1
+
+        total_group_debt += unpaid_debt
 
         out.append({
             "user_id": uid,
@@ -251,7 +285,44 @@ async def list_members(
 
     # Active first, then by name.
     out.sort(key=lambda r: (r["status"] != "Active", r["name"].lower()))
-    return out
+
+    # Apply search filter if provided
+    filtered = out
+    if search and search.strip():
+        q = search.strip().lower()
+        filtered = [
+            m for m in out
+            if q in m["name"].lower()
+            or q in (m.get("username") or "").lower()
+            or q in m["user_id"]
+            or q in (m.get("phone") or "").lower()
+            or q in (m.get("bank_name") or "").lower()
+        ]
+
+    total_count = len(filtered)
+    stats_data = {
+        "total": len(out),
+        "admins": total_admins,
+        "active": total_active,
+        "total_debt": round(total_group_debt, 2),
+    }
+
+    if page is not None:
+        import math
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        paged_items = filtered[start_idx:end_idx]
+        total_pages = math.ceil(total_count / page_size) if total_count > 0 else 1
+        return {
+            "items": paged_items,
+            "total": total_count,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages,
+            "stats": stats_data,
+        }
+
+    return filtered
 
 
 from pydantic import BaseModel
