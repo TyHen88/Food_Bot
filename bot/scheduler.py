@@ -191,8 +191,29 @@ async def _send_text_reminder_to_all(bot: Bot, payload: str = "", target_chat_id
             logger.error(f"Failed to send reminder to {chat_id}: {e}")
 
 
+def _find_qr_asset(payload: str = "payment_qr") -> Optional[Path]:
+    """Find a QR asset by name/stem, checking .jpg, .png, .jpeg, .webp extensions."""
+    assets_dir = Path(__file__).parent.parent / "assets"
+    stem = Path(payload or "payment_qr").stem
+    candidates = [
+        payload,
+        f"{stem}.jpg",
+        f"{stem}.png",
+        f"{stem}.jpeg",
+        f"{stem}.webp",
+        "payment_qr.jpg",
+        "payment_qr.png",
+    ]
+    for c in candidates:
+        if c:
+            p = assets_dir / c
+            if p.is_file():
+                return p
+    return None
+
+
 async def _send_qr_photo_to_all(bot: Bot, payload: str = "payment_qr.png", target_chat_ids: str = "ALL") -> None:
-    qr_path = Path(__file__).parent.parent / "assets" / (payload or "payment_qr.png")
+    qr_path = _find_qr_asset(payload)
     chat_ids = await _resolve_targets(target_chat_ids)
     logger.info(f"Sending QR reminder to {len(chat_ids)} chat(s) at {datetime.datetime.now()}")
     if not chat_ids:
@@ -201,7 +222,7 @@ async def _send_qr_photo_to_all(bot: Bot, payload: str = "payment_qr.png", targe
 
     for chat_id in chat_ids:
         try:
-            if qr_path.exists():
+            if qr_path and qr_path.exists():
                 with open(qr_path, "rb") as photo:
                     await bot.send_photo(
                         chat_id=chat_id, photo=photo, caption=VONGSA_QR_CAPTION,
@@ -210,7 +231,7 @@ async def _send_qr_photo_to_all(bot: Bot, payload: str = "payment_qr.png", targe
                 await bot.send_message(
                     chat_id=chat_id, text="QR image not found.",
                 )
-                logger.warning(f"QR image not found at {qr_path}")
+                logger.warning(f"QR image not found for payload {payload} in {Path(__file__).parent.parent / 'assets'}")
             logger.info(f"QR reminder sent to {chat_id}")
         except Exception as e:
             logger.error(f"Failed to send QR reminder to {chat_id}: {e}")
@@ -225,8 +246,10 @@ def _image_send_arg(image: str):
     image = (image or "").strip()
     if not image:
         return None
-    p = Path(__file__).parent.parent / "assets" / image
-    return p if p.exists() else image
+    p = _find_qr_asset(image)
+    if p and p.is_file():
+        return p
+    return image
 
 
 async def _send_scheduled(

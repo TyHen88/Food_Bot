@@ -553,10 +553,28 @@ async def handle_debug_qr_command(update: Update, context: ContextTypes.DEFAULT_
         logger.error(f"Error in debug_qr command: {e}")
 
 
+def _find_qr_path(base_name: str) -> Optional[Path]:
+    """Find a QR asset path by name, supporting .jpg, .png, .jpeg, .webp extensions."""
+    assets_dir = Path(__file__).parent.parent / "assets"
+    stem = Path(base_name).stem
+    candidates = [
+        base_name,
+        f"{stem}.jpg",
+        f"{stem}.png",
+        f"{stem}.jpeg",
+        f"{stem}.webp",
+    ]
+    for c in candidates:
+        p = assets_dir / c
+        if p.is_file():
+            return p
+    return None
+
+
 async def handle_pay_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /vongsa command and send Vongsa KHQR image."""
     chat_id = update.effective_chat.id
-    qr_path = Path(__file__).parent.parent / "assets" / "payment_qr.png"
+    qr_path = _find_qr_path("payment_qr")
 
     pay_message = (
         "*Vongsa Hourt Payment (KHQR)*\n\n"
@@ -564,7 +582,7 @@ async def handle_pay_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
 
     try:
-        if qr_path.exists():
+        if qr_path and qr_path.exists():
             with open(qr_path, "rb") as photo:
                 await context.bot.send_photo(
                     chat_id=chat_id,
@@ -574,7 +592,7 @@ async def handle_pay_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 )
         else:
             await update.message.reply_text("QR image not found.")
-            logger.warning(f"QR image not found at {qr_path}")
+            logger.warning(f"QR image not found for /vongsa in {Path(__file__).parent.parent / 'assets'}")
         logger.info(f"/vongsa command used by user {update.effective_user.id}")
     except Exception as e:
         logger.error(f"Error handling /vongsa command: {e}")
@@ -584,7 +602,7 @@ async def handle_pay_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def handle_ty_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /ty command and send Ty KHQR image."""
     chat_id = update.effective_chat.id
-    qr_path = Path(__file__).parent.parent / "assets" / "ty_qr.png"
+    qr_path = _find_qr_path("ty_qr")
 
     pay_message = (
         "*TY HEN Payment (KHQR)*\n\n"
@@ -592,7 +610,7 @@ async def handle_ty_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     )
 
     try:
-        if qr_path.exists():
+        if qr_path and qr_path.exists():
             with open(qr_path, "rb") as photo:
                 await context.bot.send_photo(
                     chat_id=chat_id,
@@ -602,7 +620,7 @@ async def handle_ty_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 )
         else:
             await update.message.reply_text("TY QR image not found.")
-            logger.warning(f"TY QR image not found at {qr_path}")
+            logger.warning(f"TY QR image not found in {Path(__file__).parent.parent / 'assets'}")
         logger.info(f"/ty command used by user {update.effective_user.id}")
     except Exception as e:
         logger.error(f"Error handling /ty command: {e}")

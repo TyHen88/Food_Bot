@@ -325,13 +325,23 @@ _ASSETS_DIR = Path(__file__).parent.parent.parent / "assets"
 
 def payer_qr_path(qr_filename: Any) -> Optional[Path]:
     """Resolve a payer row's qr_filename inside assets/, or None when unset
-    or missing. Path().name strips any directory parts, so a sheet value can
-    never escape the assets folder."""
+    or missing. Supports .jpg, .png, .jpeg, .webp extensions seamlessly."""
     name = Path(str(qr_filename or "").strip()).name
     if not name:
         return None
-    path = _ASSETS_DIR / name
-    return path if path.is_file() else None
+    stem = Path(name).stem
+    candidates = [
+        name,
+        f"{stem}.jpg",
+        f"{stem}.png",
+        f"{stem}.jpeg",
+        f"{stem}.webp",
+    ]
+    for c in candidates:
+        path = _ASSETS_DIR / c
+        if path.is_file():
+            return path
+    return None
 
 
 # Telegram caps photo captions at 1024 chars (messages get 4096).
