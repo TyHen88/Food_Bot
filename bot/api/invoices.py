@@ -98,6 +98,9 @@ async def list_invoices(
     titles = await _chat_titles()
     caller_id = caller_user_id(auth)
     names = _caller_names(auth)
+    curr_rate_row = await exchange.current()
+    system_rate = float((curr_rate_row or {}).get("usd_khr") or 4047)
+
     out = []
     for r in rows:
         order_date = str(r.get("order_date") or "")
@@ -108,14 +111,15 @@ async def list_invoices(
 
         details = r.get("details") or []
         my_amount, my_paid = _my_amount_and_paid(details, caller_id, names)
-        rate = r.get("usd_khr_rate") or 0
+        rate = float(r.get("usd_khr_rate") or 0)
+        effective_rate = rate if rate > 0 else system_rate
         paid_count = sum(1 for d in details if d.get("paid"))
         all_paid = bool(details and paid_count == len(details))
 
         chat_title = titles.get(r["chat_id"], "")
         total_val = float(r.get("total") or 0)
-        total_khr_val = exchange.to_khr(total_val, rate) if rate else None
-        my_amount_khr_val = exchange.to_khr(my_amount, rate) if rate else None
+        total_khr_val = exchange.to_khr(total_val, effective_rate)
+        my_amount_khr_val = exchange.to_khr(my_amount, effective_rate)
 
         out.append({
             **{k: v for k, v in r.items() if k != "details"},
@@ -125,7 +129,7 @@ async def list_invoices(
             "all_paid": all_paid,
             "my_amount": my_amount,
             "my_paid": my_paid,
-            # Converted at the invoice's own pinned rate, never today's.
+            "usd_khr_rate": effective_rate,
             "my_amount_khr": my_amount_khr_val,
             "total_khr": total_khr_val,
         })
@@ -146,7 +150,7 @@ async def list_invoices(
 
     total_orders = len(filtered)
     total_amount = sum(float(inv.get("total") or 0) for inv in filtered)
-    total_amount_khr = sum(float(inv.get("total_khr") or 0) for inv in filtered if inv.get("total_khr"))
+    total_amount_khr = sum(float(inv.get("total_khr") or 0) for inv in filtered)
 
     stats_data = {
         "orders": total_orders,
