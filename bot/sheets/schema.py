@@ -257,6 +257,24 @@ SEED_SETTING: List[Dict[str, str]] = [
                      "Order button is tapped. 1=classic receipt, 2=compact "
                      "single list, 3=boxed card per item."),
      "updated_at": "", "updated_by": ""},
+
+    {"key": "AUTO_INVOICE_ENABLED",
+     "value": "TRUE",
+     "value_type": "boolean",
+     "description": "Automatically generate & share invoice with fixed price at scheduled time",
+     "updated_at": "", "updated_by": ""},
+
+    {"key": "AUTO_INVOICE_TIME",
+     "value": "11:59",
+     "value_type": "time",
+     "description": "HH:MM — daily auto-invoicing time in Cambodia timezone (Mon-Fri)",
+     "updated_at": "", "updated_by": ""},
+
+    {"key": "AUTO_INVOICE_PRICE",
+     "value": "1.75",
+     "value_type": "number",
+     "description": "Fixed USD price per item when auto-generating invoice",
+     "updated_at": "", "updated_by": ""},
 ]
 
 

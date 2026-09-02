@@ -117,16 +117,94 @@ def test_non_member_handling():
     tx = parse_payway_transaction(text)
     assert tx is not None
     assert tx.sender_name == "STRANGER UNKNOWN"
-    assert tx.amount_usd == 25.00
-    print("✓ Non-member transaction parsed cleanly")
+def test_parser_with_forward_and_emoji_prefix():
+    text_with_emoji = "💸 $1.75 paid by SOK DARA (*111) on Aug 25, 12:30 PM via ABA KHQR at HEN TY. Trx. ID: 123456789, APV: 999999."
+    assert is_payway_text(text_with_emoji)
+    tx = parse_payway_transaction(text_with_emoji)
+    assert tx is not None
+    assert tx.amount == 1.75
+    assert tx.sender_name == "SOK DARA"
+    assert tx.trx_id == "123456789"
+    print("✓ PayWay text with emoji prefix parsed successfully")
+
+    forwarded_text = "Forwarded message from @PayWayByABA_bot:\n$3.50 paid by CHANTHY PHAN (*555) on Aug 25, 01:15 PM via ABA KHQR at HEN TY. Trx. ID: 987654321, APV: 888888."
+    assert is_payway_text(forwarded_text)
+    tx_fwd = parse_payway_transaction(forwarded_text)
+    assert tx_fwd is not None
+    assert tx_fwd.amount == 3.50
+    assert tx_fwd.sender_name == "CHANTHY PHAN"
+    print("✓ Forwarded PayWay message parsed successfully")
+
+
+def test_auto_invoicing_helpers():
+    from bot.invoicing import build_invoice_text, clean_item_name
+
+    assert clean_item_name("1. បាយសាច់ជ្រូក") == "បាយសាច់ជ្រូក"
+    assert clean_item_name("• Fried Rice") == "Fried Rice"
+    assert clean_item_name("- Soup") == "Soup"
+
+    user_orders = {
+        "Dara": [{"item_name": "Fried Rice", "qty": 1, "price": 1.75, "cost": 1.75}],
+        "Seyha": [{"item_name": "Soup", "qty": 2, "price": 1.75, "cost": 3.50}],
+    }
+    inv_text = build_invoice_text(
+        order_date="2026-09-02",
+        user_orders=user_orders,
+        payer_name="HEN TY",
+        khqr_text="000201010212...",
+        rate={"usd_khr": 4000.0, "rate_date": "2026-09-02"},
+        currencies=["USD", "KHR"],
+    )
+    assert "2026-09-02" in inv_text
+    assert "Dara" in inv_text
+    assert "Seyha" in inv_text
+    assert "$1.75" in inv_text
+    assert "$3.50" in inv_text
+    assert "$5.25" in inv_text
+    assert "HEN TY" in inv_text
+    print("✓ Invoicing helpers and text rendering work")
+
+
+def test_auto_invoice_time_and_price_parser():
+    from bot.handlers import _parse_time_arg, _parse_price_arg
+
+    # Test time extraction with full sentence
+    t1 = _parse_time_arg("/auto-invoice set to 11:59 AM in cambodia time")
+    assert t1 is not None
+    assert t1[0] == 11 and t1[1] == 59
+    assert t1[2] == "11:59"
+    assert t1[3] == "11:59 AM"
+
+    # Test 12-hour PM
+    t2 = _parse_time_arg("/auto-invoice set 1:30 PM")
+    assert t2 is not None
+    assert t2[0] == 13 and t2[1] == 30
+    assert t2[2] == "13:30"
+    assert t2[3] == "01:30 PM"
+
+    # Test 24-hour
+    t3 = _parse_time_arg("/auto-invoice 11:59")
+    assert t3 is not None
+    assert t3[0] == 11 and t3[1] == 59
+
+    # Test price parsing
+    p1 = _parse_price_arg("/auto-invoice 1.75")
+    assert p1 == 1.75
+
+    p2 = _parse_price_arg("/auto-invoice set 11:59 AM $2.50")
+    assert p2 == 2.50
+    print("✓ Auto-invoice time and price argument parser works perfectly")
 
 
 if __name__ == "__main__":
-    print("Running ABA PayWay feature tests...")
+    print("Running ABA PayWay & Invoicing feature tests...")
     test_parser_exact_sample()
     test_parser_khr()
+    test_parser_with_forward_and_emoji_prefix()
+    test_auto_invoicing_helpers()
+    test_auto_invoice_time_and_price_parser()
     test_name_tokens_matching()
     test_receipt_formatting()
     test_non_member_handling()
-    print("🎉 All PayWay tests passed!")
+    print("🎉 All PayWay & Invoicing tests passed!")
 

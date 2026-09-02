@@ -60,17 +60,24 @@ async def match_member(sender_name: str, account_mask: str = "") -> Optional[Dic
         )
         if norm_sender in variants:
             return u
-        # Token match on full_name
+        # Token match on full_name or username
         full_toks = _tokens(u.get("full_name") or "")
+        user_toks = _tokens(u.get("username") or "")
         if full_toks and full_toks == sender_toks:
             return u
+        if user_toks and user_toks == sender_toks:
+            return u
 
-    # Pass 3: Substring / loose token match if >= 2 words match
-    if len(sender_toks) >= 2:
-        for u in users:
-            cand = f"{u.get('full_name', '')} {u.get('bank_name', '')}"
-            cand_toks = _tokens(cand)
-            if sender_toks.issubset(cand_toks) or cand_toks.issubset(sender_toks):
+    # Pass 3: Substring / loose token match
+    for u in users:
+        cand = f"{u.get('full_name', '')} {u.get('bank_name', '')} {u.get('username', '')}"
+        cand_toks = _tokens(cand)
+        if len(sender_toks) >= 2 and (sender_toks.issubset(cand_toks) or cand_toks.issubset(sender_toks)):
+            return u
+        # Single token exact match if token length >= 4
+        if len(sender_toks) == 1:
+            tok = next(iter(sender_toks))
+            if len(tok) >= 4 and tok in cand_toks:
                 return u
 
     return None
@@ -97,6 +104,11 @@ async def get_unpaid_invoices_for_user(user: Dict[str, Any]) -> List[Dict[str, A
         username=user.get("username") or "",
         full_name=user.get("full_name") or "",
     )
+    raw_bank = str(user.get("bank_name") or "")
+    if raw_bank:
+        for a in raw_bank.replace(",", "|").split("|"):
+            if a.strip():
+                names.add(norm_name(a.strip()))
 
     all_invoices = await sheets_invoices.list_all()
     # Sort chronologically (oldest order_date first)
@@ -180,18 +192,24 @@ def format_unmatched_alert(tx: PayWayTransaction) -> str:
     )
 
 
-async def process_transaction_settlement(tx: PayWayTransaction) -> Dict[str, Any]:
+async def process_transaction_settlement(
+    tx: PayWayTransaction,
+    *,
+    force_settle: bool = False,
+    assigned_user: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     Execute end-to-end settlement for an incoming PayWay transaction.
     """
-    # 1. Deduplication check
-    existing = await sheets_payments.find_by_trx_id(tx.trx_id)
-    if existing:
-        logger.info(f"Duplicate PayWay transaction ignored: Trx ID {tx.trx_id}")
-        return {"status": "DUPLICATE", "payment": existing}
+    # 1. Deduplication check (skipped if force_settle is requested on an existing payment)
+    if not force_settle:
+        existing = await sheets_payments.find_by_trx_id(tx.trx_id)
+        if existing:
+            logger.info(f"Duplicate PayWay transaction ignored: Trx ID {tx.trx_id}")
+            return {"status": "DUPLICATE", "payment": existing}
 
     # 2. Member matching
-    matched_user = await match_member(tx.sender_name, tx.account_mask)
+    matched_user = assigned_user or await match_member(tx.sender_name, tx.account_mask)
 
     if not matched_user:
         logger.warning(f"Unmatched PayWay transaction: {tx.sender_name} - ${tx.amount_usd}")
@@ -220,6 +238,11 @@ async def process_transaction_settlement(tx: PayWayTransaction) -> Dict[str, Any
         username=matched_user.get("username") or "",
         full_name=matched_user.get("full_name") or "",
     )
+    raw_bank = str(matched_user.get("bank_name") or "")
+    if raw_bank:
+        for a in raw_bank.replace(",", "|").split("|"):
+            if a.strip():
+                names.add(norm_name(a.strip()))
 
     unpaid_orders = await get_unpaid_invoices_for_user(matched_user)
     remaining_funds = tx.amount_usd
@@ -255,20 +278,53 @@ async def process_transaction_settlement(tx: PayWayTransaction) -> Dict[str, Any
         })
         remaining_funds = max(0.0, remaining_funds - pay_amount)
 
-    # 4. Save payment record
-    payment = await sheets_payments.create_payment(
-        payment_id=f"pay_{tx.trx_id}",
-        trx_id=tx.trx_id,
-        user_id=uid,
-        sender_name=tx.sender_name,
-        amount=tx.amount,
-        currency=tx.currency,
-        amount_usd=tx.amount_usd,
-        settled_orders=settled_list,
-        status="MATCHED",
-        apv=tx.apv,
-        raw_text=tx.raw_text,
-    )
+    # Auto-learn / update bank_name alias if sender_name is new
+    if tx.sender_name and is_configured():
+        current_bank = str(matched_user.get("bank_name") or "").strip()
+        if not current_bank:
+            await repo.update("user", uid, {"bank_name": tx.sender_name})
+        elif tx.sender_name.lower() not in current_bank.lower():
+            updated_bank = f"{current_bank} | {tx.sender_name}"
+            await repo.update("user", uid, {"bank_name": updated_bank})
+
+    # 4. Save/Update payment record
+    payment_id = f"pay_{tx.trx_id}"
+    payment = {
+        "payment_id": payment_id,
+        "trx_id": tx.trx_id,
+        "user_id": uid,
+        "sender_name": tx.sender_name,
+        "amount": tx.amount,
+        "currency": tx.currency,
+        "amount_usd": tx.amount_usd,
+        "settled_orders": settled_list,
+        "status": "MATCHED",
+        "apv": tx.apv,
+        "raw_text": tx.raw_text,
+    }
+
+    if is_configured():
+        existing_payment = await sheets_payments.find_by_trx_id(tx.trx_id)
+        if existing_payment:
+            await repo.update("payment", existing_payment.get("payment_id", payment_id), {
+                "user_id": uid,
+                "status": "MATCHED",
+                "settled_orders": json.dumps(settled_list, ensure_ascii=False),
+            })
+        else:
+            await sheets_payments.create_payment(
+                payment_id=payment_id,
+                trx_id=tx.trx_id,
+                user_id=uid,
+                sender_name=tx.sender_name,
+                amount=tx.amount,
+                currency=tx.currency,
+                amount_usd=tx.amount_usd,
+                settled_orders=settled_list,
+                status="MATCHED",
+                apv=tx.apv,
+                raw_text=tx.raw_text,
+            )
 
     # 5. Calculate remaining unpaid balance
     remaining_invoices = await get_unpaid_invoices_for_user(matched_user)

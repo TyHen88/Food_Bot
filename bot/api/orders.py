@@ -25,6 +25,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status, Request
 from pydantic import BaseModel
 
 from .. import exchange
+from ..invoicing import (
+    build_invoice_text,
+    clean_item_name,
+    generate_and_send_invoice,
+    payer_qr_data_uri,
+    payer_qr_path,
+    price_of,
+    send_invoice_message,
+)
 from ..people import norm_name, strip_invisible
 from ..sheets import invoices as sheets_invoices
 from ..sheets import orders as sheets_orders
@@ -32,6 +41,13 @@ from ..sheets import repo
 from ..sheets.client import is_configured
 from .auth import caller_chat_id, caller_user_id, require_admin, require_member
 from .members import user_chats
+
+# Backwards compatibility aliases for module-level functions
+_build_invoice_text = build_invoice_text
+_clean_item_name = clean_item_name
+_price_of = price_of
+_payer_qr_path = payer_qr_path
+_send_invoice_message = send_invoice_message
 
 router = APIRouter(prefix="/orders", tags=["orders"])
 logger = logging.getLogger(__name__)
@@ -534,76 +550,12 @@ async def generate_order_invoice(
             status_code=status.HTTP_400_BAD_REQUEST, detail="No items in this order"
         )
 
-    # Price lookup tolerant of leading list markers, invisible characters and
-    # capitalisation: match the raw stored name first, then the cleaned one,
-    # then a fully normalized key, so "- dish", "dish" and "Dish​" all
-    # resolve instead of silently falling back to $0.00.
-    price_map: Dict[str, float] = {}
-    for p in body.prices:
-        price_map[p.item_name] = p.price
-        price_map.setdefault(_clean_item_name(p.item_name), p.price)
-        price_map.setdefault(norm_name(p.item_name), p.price)
-    unpriced: set = set()
-
-    # Group by Telegram user id (fallback: display name) so a member whose
-    # display name changed between votes ("Tii" vs "Tii ♏️") gets ONE
-    # section; merge duplicate dishes within a person, summing quantities.
-    grouped: Dict[str, Dict[str, Dict[str, Any]]] = {}
-    display_names: Dict[str, str] = {}
-    uid_of_key: Dict[str, str] = {}
-    for it in items:
-        uid = str(it.get("user_id") or "").strip()
-        user_name = str(it.get("name") or "Guest").strip() or "Guest"
-        key = uid or user_name
-        display_names[key] = user_name  # newest name wins
-        uid_of_key[key] = uid
-
-        raw_name = str(it.get("item_name") or "Unknown")
-        item_name = _clean_item_name(raw_name) or "Unknown"
-        qty = int(it.get("qty") or 1)
-        price = _price_of(raw_name, item_name, price_map)
-        if price is None:
-            # Every unmatched dish makes the invoice — and every total built
-            # from it later, including the AI assistant's — too low, so it
-            # gets logged and reported back rather than vanishing.
-            unpriced.add(item_name)
-            price = 0.0
-
-        slot = grouped.setdefault(key, {}).setdefault(item_name, {
-            "item_name": item_name, "qty": 0, "price": price, "cost": 0.0,
-        })
-        slot["qty"] += qty
-        slot["cost"] = round(slot["price"] * slot["qty"], 2)
-
-    if unpriced:
-        logger.warning(
-            "Invoice for order %s: no price supplied for %d dish(es), counted "
-            "as $0.00 — %s", order_id, len(unpriced), sorted(unpriced),
-        )
-
-    user_orders: Dict[str, List[Dict[str, Any]]] = {}
-    for key, dishes in grouped.items():
-        user_orders.setdefault(display_names[key], []).extend(dishes.values())
-
-    # Fetch Payer's KHQR info (if exists)
-    payer_id = row.get("user_id")
-    khqr_text = ""
-    payer_full_name = row.get("username") or "the Payer"
-    payer_row = None
-    if payer_id:
-        from ..sheets import payers as sheets_payers
-        payer_row = await sheets_payers.get(payer_id)
-        if payer_row:
-            khqr_text = payer_row.get("khqr_text") or ""
-            payer_full_name = payer_row.get("full_name") or payer_full_name
-
-    # The rate in force on the ORDER's date, not today's — invoicing last
-    # Friday's lunch this Monday must quote Friday's rate.
-    rate = await exchange.rate_for(str(row.get("order_date") or ""))
+    # Extract custom price map
+    custom_prices = {p.item_name: p.price for p in body.prices}
     currencies = exchange.normalize_currencies(body.currencies)
+
+    rate = await exchange.rate_for(str(row.get("order_date") or ""))
     if "KHR" in currencies and not rate:
-        # Asking for riel with no rate available would silently produce a
-        # dollars-only invoice; say so instead of quietly ignoring the choice.
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="No exchange rate available yet, so riel amounts can't be "
@@ -611,79 +563,23 @@ async def generate_order_invoice(
                    "has been fetched.",
         )
 
-    invoice_text = _build_invoice_text(
-        str(row.get("order_date") or ""),
-        user_orders,
-        payer_full_name,
-        khqr_text,
-        rate,
-        currencies,
-    )
-    grand_total = round(sum(i["cost"] for items in user_orders.values() for i in items), 2)
-
-    # Send to the Telegram chat, attaching the payer's QR image when set.
-    chat_id = row.get("chat_id")
-    if chat_id:
-        try:
-            import logging
-            bot_logger = logging.getLogger("bot.api.orders")
-            application = request.app.state.application
-            await send_invoice_message(
-                application.bot, int(chat_id), invoice_text, payer_row,
-            )
-        except Exception as e:
-            bot_logger.error(f"Failed to send Telegram invoice: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Failed to send invoice to group chat: {str(e)}"
-            )
-
-    # Persist the invoice so it shows up in the Mini App's Invoices page
-    # (and the order flips to "View Invoice"). Failure to save must not
-    # undo a successful send — log and keep going.
-    # Persisted breakdown is per Telegram user (not per display name):
-    # user_id lets /api/invoices compute each caller's own share even when
-    # their display name changes between orders.
-    details = [
-        {
-            "user_id": uid_of_key.get(key, ""),
-            "user_name": display_names[key],
-            "items": list(dishes.values()),
-            "subtotal": round(sum(i["cost"] for i in dishes.values()), 2),
-        }
-        for key, dishes in grouped.items()
-    ]
     try:
-        await sheets_invoices.save_sent(
-            order_id=str(row.get("order_id") or order_id),
-            poll_id=str(row.get("poll_id") or ""),
-            chat_id=str(chat_id or ""),
-            order_date=str(row.get("order_date") or ""),
-            details=details,
-            total=grand_total,
-            payer_user_id=str(payer_id or ""),
-            payer_name=payer_full_name,
-            usd_khr_rate=float((rate or {}).get("usd_khr") or 0),
-            rate_date=str((rate or {}).get("rate_date") or ""),
-            display_currencies=list(currencies),
-            sent_by=(auth.get("user") or {}).get("id"),
+        application = request.app.state.application
+        user_id = (auth.get("user") or {}).get("id")
+        result = await generate_and_send_invoice(
+            bot=application.bot,
+            order_id=order_id,
+            custom_prices=custom_prices,
+            currencies=currencies,
+            sent_by=user_id,
         )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
-        import logging
-        logging.getLogger("bot.api.orders").error(
-            f"Invoice sent but saving to the invoice sheet failed: {e}", exc_info=True
+        logger.error(f"Failed to generate and send invoice: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to send invoice to group chat: {str(e)}"
         )
-
-    # unpriced_items lets the Mini App warn that dishes were billed at $0.00
-    # instead of the admin discovering it from a too-low total days later.
-    return {
-        "ok": True,
-        "total": grand_total,
-        "total_khr": exchange.to_khr(grand_total, (rate or {}).get("usd_khr") or 0)
-        if rate else None,
-        "usd_khr_rate": (rate or {}).get("usd_khr"),
-        "rate_date": (rate or {}).get("rate_date"),
-        "currencies": list(currencies),
-        "unpriced_items": sorted(unpriced),
-    }
 

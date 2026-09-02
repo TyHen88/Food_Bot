@@ -47,9 +47,9 @@ def _clean_text(text: str) -> str:
     return t
 
 
-# Regex for USD: $0.10 or $1,234.50
+# Regex for USD: $0.10 or $1,234.50 (without rigid start-of-string anchor)
 _USD_PATTERN = re.compile(
-    r"^\$(?P<amount>[\d\u17e0-\u17e9]+(?:,[\d\u17e0-\u17e9]{3})*(?:\.[\d\u17e0-\u17e9]{1,2})?)\s+"
+    r"\$(?P<amount>[\d\u17e0-\u17e9]+(?:,[\d\u17e0-\u17e9]{3})*(?:\.[\d\u17e0-\u17e9]{1,2})?)\s+"
     r"paid\s+by\s+(?P<sender>.+?)(?:\s*\((?P<mask>\*[0-9A-Za-z]+|\d+)\))?\s+"
     r"on\s+(?P<date>.+?)\s+"
     r"via\s+(?P<method>.+?)\s+"
@@ -61,7 +61,7 @@ _USD_PATTERN = re.compile(
 
 # Regex for KHR: 4,000 KHR or KHR 4,000 or ៛4,000 or ៛100 or 100៛
 _KHR_PATTERN = re.compile(
-    r"^(?:(?:KHR|៛|riel|riels)\s*)?(?P<amount>[\d\u17e0-\u17e9]+(?:,[\d\u17e0-\u17e9]{3})*(?:\.[\d\u17e0-\u17e9]{1,2})?)(?:\s*(?:KHR|៛|riel|riels))?\s+"
+    r"(?:(?:KHR|៛|riel|riels)\s*)?(?P<amount>[\d\u17e0-\u17e9]+(?:,[\d\u17e0-\u17e9]{3})*(?:\.[\d\u17e0-\u17e9]{1,2})?)(?:\s*(?:KHR|៛|riel|riels))?\s+"
     r"paid\s+by\s+(?P<sender>.+?)(?:\s*\((?P<mask>\*[0-9A-Za-z]+|\d+)\))?\s+"
     r"on\s+(?P<date>.+?)\s+"
     r"via\s+(?P<method>.+?)\s+"

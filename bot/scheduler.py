@@ -332,6 +332,26 @@ async def _snapshot_orders_at_cutoff(bot: Bot, payload: str = "") -> None:
             payload={"saved": bool(saved), "users": users},
         )
 
+        # Check if auto-invoicing is enabled (default TRUE, $1.75 fixed price per item)
+        auto_invoice_enabled = await settings.get("AUTO_INVOICE_ENABLED", "TRUE")
+        if str(auto_invoice_enabled).upper() == "TRUE" and saved:
+            try:
+                from .invoicing import generate_and_send_invoice
+                price_str = await settings.get("AUTO_INVOICE_PRICE", "1.75")
+                try:
+                    item_price = float(price_str)
+                except ValueError:
+                    item_price = 1.75
+                await generate_and_send_invoice(
+                    bot=bot,
+                    order_id=poll_id,
+                    chat_id=chat_id,
+                    price_per_item=item_price,
+                )
+                logger.info(f"Cutoff auto-invoice generated & sent for poll {poll_id} (${item_price:.2f}/item)")
+            except Exception as e:
+                logger.error(f"Failed to generate cutoff auto-invoice for poll {poll_id}: {e}", exc_info=True)
+
     logger.info(f"Cutoff snapshot: wrote {snapshot_count} order row(s) across {len(open_polls)} poll(s)")
 
 
@@ -477,6 +497,92 @@ async def _register_fallback_jobs(
     )
 
 
+async def _run_scheduled_auto_invoicing(bot: Bot) -> None:
+    """Execute scheduled auto-invoicing at AUTO_INVOICE_TIME for all active polls/orders."""
+    if not is_configured():
+        logger.info("Auto-invoice job skipped: Sheets not configured")
+        return
+
+    enabled = await settings.get("AUTO_INVOICE_ENABLED", "TRUE")
+    if str(enabled).upper() != "TRUE":
+        logger.info("Auto-invoice job skipped: AUTO_INVOICE_ENABLED is FALSE")
+        return
+
+    price_str = await settings.get("AUTO_INVOICE_PRICE", "1.75")
+    try:
+        item_price = float(price_str)
+    except ValueError:
+        item_price = 1.75
+
+    from .invoicing import generate_and_send_invoice
+    from .sheets import invoices as sheets_invoices, orders as sheets_orders
+    from .sheets.orders import _today_date
+
+    # 1. Snapshot any open polls
+    open_polls = await polls.list_open()
+    for poll in open_polls:
+        poll_id = poll["poll_id"]
+        chat_id = poll["chat_id"]
+        selections_map = await votes.get_user_selections_map(poll_id)
+        users = len(selections_map)
+        saved = await sheets_orders.snapshot_from_poll(poll_id, chat_id)
+        await polls.close(poll_id)
+        await events.emit(
+            "ORDER_SNAPSHOT", entity_type="poll", entity_id=poll_id,
+            chat_id=chat_id,
+            payload={"saved": bool(saved), "users": users},
+        )
+
+    # 2. Get today's orders that don't have an invoice yet
+    today = _today_date()
+    orders_today = await sheets_orders.list_by_date(today)
+    existing_invoices = await sheets_invoices.order_ids_with_invoice()
+
+    sent_count = 0
+    for order in orders_today:
+        oid = str(order.get("order_id", ""))
+        cid = order.get("chat_id")
+        if oid and oid not in existing_invoices:
+            try:
+                await generate_and_send_invoice(
+                    bot=bot,
+                    order_id=oid,
+                    chat_id=cid,
+                    price_per_item=item_price,
+                )
+                sent_count += 1
+                logger.info(f"Auto-invoice sent for order {oid} (${item_price:.2f}/item)")
+            except Exception as e:
+                logger.error(f"Failed to send auto-invoice for order {oid}: {e}", exc_info=True)
+
+    logger.info(f"Scheduled auto-invoicing complete: sent {sent_count} invoice(s)")
+
+
+async def _register_auto_invoice_job(
+    scheduler: AsyncIOScheduler, application: Application
+) -> None:
+    """Schedule the daily auto-invoicing job in Cambodia timezone (Asia/Phnom_Penh)."""
+    if not is_configured():
+        return
+    enabled = await settings.get("AUTO_INVOICE_ENABLED", "TRUE")
+    if str(enabled).upper() != "TRUE":
+        logger.info("Auto-invoice schedule not registered (AUTO_INVOICE_ENABLED is FALSE)")
+        return
+
+    hour, minute = await settings.get_time("AUTO_INVOICE_TIME", "11:59")
+    scheduler.add_job(
+        _run_scheduled_auto_invoicing,
+        trigger="cron",
+        day_of_week="mon-fri",
+        hour=hour,
+        minute=minute,
+        id="auto_invoice_scheduled_job",
+        args=[application.bot],
+        replace_existing=True,
+    )
+    logger.info(f"Registered auto-invoice job at {hour:02d}:{minute:02d} (Mon-Fri Cambodia Time)")
+
+
 async def _register_cutoff_job(
     scheduler: AsyncIOScheduler, application: Application
 ) -> None:
@@ -563,6 +669,7 @@ async def setup_scheduler(application: Application) -> None:
                     "no reminders will fire. Add rows in the spreadsheet."
                 )
             await _register_cutoff_job(_scheduler, application)
+            await _register_auto_invoice_job(_scheduler, application)
         else:
             await _register_fallback_jobs(_scheduler, application)
         # Independent of the `schedule` tab — the rate is infrastructure, not

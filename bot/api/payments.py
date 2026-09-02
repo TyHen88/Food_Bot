@@ -90,10 +90,7 @@ async def assign_payment(
     )
 
     # Update payment with user_id and re-trigger settlement
-    await repo.update("payment", payment_id, {
-        "user_id": str(body.user_id),
-        "status": "MATCHED",
-    })
-
-    res = await process_transaction_settlement(tx)
+    res = await process_transaction_settlement(
+        tx, force_settle=True, assigned_user=user_row
+    )
     return res
