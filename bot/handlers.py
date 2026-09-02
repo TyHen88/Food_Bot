@@ -185,6 +185,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     logger.info(f"Received message text: {repr(text)}")
 
+    # Route hyphenated or alternative slash commands that Telegram's standard CommandHandler skips
+    if text.startswith("/"):
+        first_token = text.split()[0].lower().split("@")[0]
+        norm_cmd = first_token.replace("-", "_")
+        if norm_cmd in ("/auto_invoice", "/autoinvoice"):
+            return await handle_auto_invoice_command(update, context)
+        if norm_cmd in ("/invoice_command", "/invoicecommand", "/invoice_commands", "/invoicecommands"):
+            return await handle_invoice_command_help(update, context)
+        if norm_cmd in ("/setup_payment_bot", "/payment_bot"):
+            return await handle_setup_payment_bot_command(update, context)
+        if norm_cmd == "/schedule_list":
+            return await handle_schedule_list_command(update, context)
+        if norm_cmd == "/schedule_enable":
+            return await handle_schedule_enable_command(update, context)
+        if norm_cmd == "/schedule_disable":
+            return await handle_schedule_disable_command(update, context)
+        if norm_cmd == "/exchange_rate":
+            return await handle_exchange_rate_command(update, context)
+
     if is_payway_text(text):
         rate = 4000.0
         try:
@@ -1354,7 +1373,17 @@ def setup_handlers(application) -> None:
     application.add_handler(CommandHandler("schedule_enable", handle_schedule_enable_command))
     application.add_handler(CommandHandler("schedule_disable", handle_schedule_disable_command))
 
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    # Hyphenated slash commands (e.g. /auto-invoice, /invoice-command, /setup-payment-bot)
+    application.add_handler(MessageHandler(filters.Regex(re.compile(r"^/(?:auto[-_]invoice|autoinvoice)", re.IGNORECASE)), handle_auto_invoice_command))
+    application.add_handler(MessageHandler(filters.Regex(re.compile(r"^/(?:invoice[-_]command|invoicecommand|invoice[-_]commands|invoicecommands)", re.IGNORECASE)), handle_invoice_command_help))
+    application.add_handler(MessageHandler(filters.Regex(re.compile(r"^/(?:setup[-_]payment[-_]bot|payment[-_]bot)", re.IGNORECASE)), handle_setup_payment_bot_command))
+    application.add_handler(MessageHandler(filters.Regex(re.compile(r"^/(?:schedule[-_]list)", re.IGNORECASE)), handle_schedule_list_command))
+    application.add_handler(MessageHandler(filters.Regex(re.compile(r"^/(?:schedule[-_]enable)", re.IGNORECASE)), handle_schedule_enable_command))
+    application.add_handler(MessageHandler(filters.Regex(re.compile(r"^/(?:schedule[-_]disable)", re.IGNORECASE)), handle_schedule_disable_command))
+    application.add_handler(MessageHandler(filters.Regex(re.compile(r"^/(?:exchange[-_]rate)", re.IGNORECASE)), handle_exchange_rate_command))
+
+    # General message handler (handles food menus, payment receipts, etc.)
+    application.add_handler(MessageHandler(filters.TEXT, handle_message))
     application.add_handler(PollAnswerHandler(handle_poll_answer))
     application.add_handler(CallbackQueryHandler(handle_callback_query))
 
