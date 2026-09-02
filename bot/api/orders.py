@@ -34,7 +34,7 @@ from ..invoicing import (
     price_of,
     send_invoice_message,
 )
-from ..people import norm_name, strip_invisible
+from ..people import is_same_person, name_variants, norm_name, strip_invisible
 from ..sheets import invoices as sheets_invoices
 from ..sheets import orders as sheets_orders
 from ..sheets import repo
@@ -219,11 +219,27 @@ async def list_orders(
     # Filter for specific user if requested
     target_user_id = caller_user_id(auth) if my_only else (str(user_id).strip() if user_id else None)
     if target_user_id:
+        target_names = set()
+        if is_configured():
+            u_row = await repo.find_by_pk("user", target_user_id)
+            if u_row:
+                target_names = name_variants(
+                    username=u_row.get("username") or "",
+                    full_name=u_row.get("full_name") or "",
+                )
+        if not target_names and (my_only or target_user_id == caller_user_id(auth)):
+            u_dict = auth.get("user") or {}
+            target_names = name_variants(
+                username=u_dict.get("username") or "",
+                first_name=u_dict.get("first_name") or "",
+                last_name=u_dict.get("last_name") or "",
+            )
+
         def has_user(ord_dict: Dict[str, Any]) -> bool:
             if str(ord_dict.get("paid_by", {}).get("user_id", "")).strip() == target_user_id:
                 return True
             for it in ord_dict.get("items", []):
-                if str(it.get("user_id", "")).strip() == target_user_id:
+                if is_same_person(it.get("user_id"), it.get("name"), target_user_id, target_names):
                     return True
             return False
         out = [ord_item for ord_item in out if has_user(ord_item)]

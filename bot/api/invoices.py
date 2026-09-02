@@ -18,6 +18,8 @@ from .. import exchange
 from ..people import is_same_person, name_variants
 from ..sheets import invoices as sheets_invoices
 from ..sheets import payers as sheets_payers
+from ..sheets import repo
+from ..sheets.client import is_configured
 from .auth import caller_chat_id, caller_user_id, require_admin, require_member
 from .members import user_chats
 from .orders import _build_invoice_text, _chat_titles, payer_qr_data_uri, send_invoice_message
@@ -75,6 +77,7 @@ async def list_invoices(
     date_from: Optional[str] = Query(None, alias="from", description="Inclusive YYYY-MM-DD lower bound."),
     date_to: Optional[str] = Query(None, alias="to", description="Inclusive YYYY-MM-DD upper bound."),
     search: Optional[str] = Query(None, description="Search term for payer, chat title, or date."),
+    user_id: Optional[str] = Query(None, description="Target user_id to compute my_amount and my_paid for."),
     auth: dict = Depends(require_member),
 ) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
     """Invoices newest-first, without the full breakdown (see detail). Supports pagination & filtering."""
@@ -97,7 +100,24 @@ async def list_invoices(
 
     titles = await _chat_titles()
     caller_id = caller_user_id(auth)
-    names = _caller_names(auth)
+
+    # Determine target user for calculating personal invoice amounts
+    target_id = caller_id
+    target_names = _caller_names(auth)
+    if user_id and str(user_id).strip():
+        req_uid = str(user_id).strip()
+        if auth.get("is_admin") or req_uid == caller_id:
+            target_id = req_uid
+            if is_configured():
+                u_row = await repo.find_by_pk("user", target_id)
+                if u_row:
+                    target_names = name_variants(
+                        username=u_row.get("username") or "",
+                        full_name=u_row.get("full_name") or "",
+                    )
+            if not target_names and req_uid == caller_id:
+                target_names = _caller_names(auth)
+
     curr_rate_row = await exchange.current()
     system_rate = float((curr_rate_row or {}).get("usd_khr") or 4047)
 
@@ -110,11 +130,17 @@ async def list_invoices(
             continue
 
         details = r.get("details") or []
-        my_amount, my_paid = _my_amount_and_paid(details, caller_id, names)
+        my_amount, my_paid = _my_amount_and_paid(details, target_id, target_names)
         rate = float(r.get("usd_khr_rate") or 0)
         effective_rate = rate if rate > 0 else system_rate
         paid_count = sum(1 for d in details if d.get("paid"))
         all_paid = bool(details and paid_count == len(details))
+
+        # Extract matched user's items for quick display on frontend
+        my_items = []
+        for d in details:
+            if is_same_person(d.get("user_id"), d.get("user_name"), target_id, target_names):
+                my_items.extend(d.get("items") or [])
 
         chat_title = titles.get(r["chat_id"], "")
         total_val = float(r.get("total") or 0)
@@ -129,6 +155,7 @@ async def list_invoices(
             "all_paid": all_paid,
             "my_amount": my_amount,
             "my_paid": my_paid,
+            "my_items": my_items,
             "usd_khr_rate": effective_rate,
             "my_amount_khr": my_amount_khr_val,
             "total_khr": total_khr_val,
