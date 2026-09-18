@@ -278,8 +278,16 @@ async def generate_and_send_invoice(
             khqr_text = str(payer_row.get("khqr_text") or "")
             payer_full_name = str(payer_row.get("full_name") or payer_full_name)
 
+    existing_inv = await sheets_invoices.get(str(order_id))
     order_date = str(row.get("order_date") or "")
-    rate = await exchange.rate_for(order_date)
+    rate = None
+    if existing_inv and existing_inv.get("usd_khr_rate"):
+        rate = {
+            "usd_khr": existing_inv["usd_khr_rate"],
+            "rate_date": existing_inv.get("rate_date") or "",
+        }
+    if not rate:
+        rate = await exchange.rate_for(order_date)
     if not rate:
         rate = await exchange.current()
 
@@ -310,18 +318,34 @@ async def generate_and_send_invoice(
             logger.error(f"Failed to send Telegram invoice for order {order_id}: {e}", exc_info=True)
             raise RuntimeError(f"Failed to send invoice to chat {target_chat_id}: {e}")
 
+    # Map existing member payment statuses to preserve them across invoice updates
+    existing_paid_map: Dict[str, Dict[str, Any]] = {}
+    if existing_inv and existing_inv.get("details"):
+        for d in existing_inv["details"]:
+            u_id = str(d.get("user_id") or "").strip()
+            u_name = str(d.get("user_name") or "").strip()
+            if u_id:
+                existing_paid_map[u_id] = d
+            if u_name:
+                existing_paid_map[u_name] = d
+
     # Persist the invoice
-    details = [
-        {
-            "user_id": uid_of_key.get(key, ""),
-            "user_name": display_names[key],
+    details = []
+    for key, dishes in grouped.items():
+        u_id = uid_of_key.get(key, "")
+        u_name = display_names[key]
+        prev_record = existing_paid_map.get(u_id) or existing_paid_map.get(u_name) or {}
+        is_paid = bool(prev_record.get("paid", False))
+        paid_amt = float(prev_record.get("paid_amount", 0.0)) if is_paid else 0.0
+
+        details.append({
+            "user_id": u_id,
+            "user_name": u_name,
             "items": list(dishes.values()),
             "subtotal": round(sum(i["cost"] for i in dishes.values()), 2),
-            "paid": False,
-            "paid_amount": 0.0,
-        }
-        for key, dishes in grouped.items()
-    ]
+            "paid": is_paid,
+            "paid_amount": paid_amt,
+        })
 
     await sheets_invoices.save_sent(
         order_id=str(row.get("order_id") or order_id),

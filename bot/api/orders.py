@@ -35,6 +35,7 @@ from ..invoicing import (
     send_invoice_message,
 )
 from ..people import is_same_person, name_variants, norm_name, strip_invisible
+from ..sheets import events as sheets_events
 from ..sheets import invoices as sheets_invoices
 from ..sheets import orders as sheets_orders
 from ..sheets import repo
@@ -278,6 +279,74 @@ async def list_orders(
 
     out.sort(key=lambda r: (r.get("order_date") or "", r.get("created_at") or ""))
     return out
+
+
+@router.get("/{order_id}")
+async def get_order(
+    order_id: str,
+    auth: dict = Depends(require_member),
+) -> Dict[str, Any]:
+    """Single order detail annotated for the Mini App."""
+    row = await sheets_orders.get_by_poll(order_id)
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Order not found"
+        )
+    if not auth.get("is_admin"):
+        my_chats = await user_chats(caller_user_id(auth))
+        auth_chat = caller_chat_id(auth)
+        cid = str(row.get("chat_id", "")).strip()
+        if cid != auth_chat and cid not in my_chats:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Order not found"
+            )
+    titles = await _chat_titles()
+    polls = await _poll_meta()
+    users = await _user_names()
+    invoiced = await sheets_invoices.order_ids_with_invoice()
+    return {
+        **_shape_order(row, titles=titles, polls=polls, users=users),
+        "has_invoice": str(row.get("order_id", "")).strip() in invoiced,
+    }
+
+
+@router.delete("/{order_id}")
+async def delete_order(
+    order_id: str,
+    auth: dict = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Admin-only: Delete an order snapshot when its invoice has not been generated yet."""
+    row = await sheets_orders.get_by_poll(order_id)
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Order not found"
+        )
+
+    # Check if invoice is already generated
+    invoiced = await sheets_invoices.order_ids_with_invoice()
+    if str(order_id).strip() in invoiced:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot delete an order that already has a generated invoice."
+        )
+
+    deleted = await sheets_orders.delete_order(order_id)
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete order from storage"
+        )
+
+    user_id = (auth.get("user") or {}).get("id")
+    await sheets_events.emit(
+        "ORDER_DELETED",
+        entity_type="order",
+        entity_id=str(order_id),
+        chat_id=int(row["chat_id"]) if str(row.get("chat_id", "")).lstrip("-").isdigit() else None,
+        user_id=user_id,
+        payload={"order_date": row.get("order_date")},
+    )
+    return {"ok": True, "order_id": order_id}
 
 
 class ItemIn(BaseModel):

@@ -223,3 +223,13 @@ async def list_in_range(
     if is_configured():
         return await repo.filter_rows("order", in_range)
     return [row for row in _mem_orders.values() if in_range(row)]
+
+
+async def delete_order(order_id: str) -> bool:
+    """Delete an order snapshot by ID (order_id / poll_id)."""
+    if is_configured():
+        return await repo.hard_delete("order", str(order_id))
+    if str(order_id) in _mem_orders:
+        del _mem_orders[str(order_id)]
+        return True
+    return False
