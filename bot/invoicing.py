@@ -14,12 +14,12 @@ import logging
 import mimetypes
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Set, Union
 
 from telegram import Bot
 
 from . import exchange
-from .people import norm_name, strip_invisible
+from .people import is_same_person, name_variants, norm_name, strip_invisible
 from .sheets import events as sheets_events
 from .sheets import invoices as sheets_invoices
 from .sheets import orders as sheets_orders
@@ -142,6 +142,8 @@ def build_invoice_text(
     khqr_text: str = "",
     rate: Optional[Dict[str, Any]] = None,
     currencies: Any = None,
+    payer_user_id: Optional[str] = None,
+    payer_names: Optional[Set[str]] = None,
 ) -> str:
     """Render the invoice message in Telegram HTML format."""
     from html import escape
@@ -151,6 +153,12 @@ def build_invoice_text(
 
     def money(amount: float) -> str:
         return exchange.format_money(amount, usd_khr, wanted)
+
+    payer_variants = set()
+    if payer_names:
+        payer_variants.update(payer_names)
+    if payer_name:
+        payer_variants.update(name_variants(full_name=payer_name, username=payer_name))
 
     sep = "══════════════════════"
     lines = [f"🧾 <b>Order Invoice</b> | {escape(order_date)}"]
@@ -162,11 +170,22 @@ def build_invoice_text(
     lines.append("")
 
     grand_total = 0.0
+    payer_subtotal = 0.0
+
     for user_name, user_items in user_orders.items():
         user_total = sum(i["cost"] for i in user_items)
         grand_total += user_total
 
-        lines.append(f"▪️ <b>{escape(user_name)}</b>")
+        u_id = next((str(i.get("user_id") or "").strip() for i in user_items if i.get("user_id")), "")
+        is_payer = is_same_person(u_id, user_name, payer_user_id, payer_variants)
+        if is_payer:
+            payer_subtotal += user_total
+
+        name_display = escape(user_name)
+        if is_payer:
+            name_display += " <i>(Payer)</i>"
+
+        lines.append(f"▪️ <b>{name_display}</b>")
         for i in user_items:
             lines.append(
                 f"• {escape(str(i['item_name']))} ×{i['qty']}   "
@@ -177,7 +196,12 @@ def build_invoice_text(
         lines.append("")
 
     lines.append(sep)
-    lines.append(f"💰 <b>Total Due</b>   <code>{money(grand_total)}</code>")
+    amount_due = max(0.0, round(grand_total - payer_subtotal, 2))
+    if payer_subtotal > 0.009:
+        lines.append(f"🧾 <b>Order Total</b>   <code>{money(grand_total)}</code>")
+        lines.append(f"💰 <b>Total Due</b>     <code>{money(amount_due)}</code>")
+    else:
+        lines.append(f"💰 <b>Total Due</b>   <code>{money(grand_total)}</code>")
     lines.append(f"💳 <b>Pay to</b> {escape(payer_name)}")
     lines.append(sep)
 
@@ -258,7 +282,7 @@ async def generate_and_send_invoice(
             price = float(price_per_item)
 
         slot = grouped.setdefault(key, {}).setdefault(item_name, {
-            "item_name": item_name, "qty": 0, "price": price, "cost": 0.0,
+            "item_name": item_name, "qty": 0, "price": price, "cost": 0.0, "user_id": uid,
         })
         slot["qty"] += qty
         slot["cost"] = round(slot["price"] * slot["qty"], 2)
@@ -277,6 +301,11 @@ async def generate_and_send_invoice(
         if payer_row:
             khqr_text = str(payer_row.get("khqr_text") or "")
             payer_full_name = str(payer_row.get("full_name") or payer_full_name)
+
+    payer_names = name_variants(
+        username=row.get("username") or "",
+        full_name=payer_full_name,
+    )
 
     existing_inv = await sheets_invoices.get(str(order_id))
     order_date = str(row.get("order_date") or "")
@@ -303,6 +332,8 @@ async def generate_and_send_invoice(
         khqr_text=khqr_text,
         rate=rate,
         currencies=wanted_currencies,
+        payer_user_id=str(payer_id or "") if payer_id else None,
+        payer_names=payer_names,
     )
     grand_total = round(sum(i["cost"] for items_list in user_orders.values() for i in items_list), 2)
 
@@ -335,14 +366,23 @@ async def generate_and_send_invoice(
         u_id = uid_of_key.get(key, "")
         u_name = display_names[key]
         prev_record = existing_paid_map.get(u_id) or existing_paid_map.get(u_name) or {}
-        is_paid = bool(prev_record.get("paid", False))
-        paid_amt = float(prev_record.get("paid_amount", 0.0)) if is_paid else 0.0
+
+        is_payer = is_same_person(u_id, u_name, payer_id, payer_names)
+        subtotal = round(sum(i["cost"] for i in dishes.values()), 2)
+
+        if "paid" in prev_record:
+            is_paid = bool(prev_record.get("paid", False))
+            paid_amt = float(prev_record.get("paid_amount", 0.0)) if is_paid else float(prev_record.get("paid_amount", 0.0))
+        else:
+            # Payer pays the restaurant upfront, so their own meal is auto-paid
+            is_paid = is_payer
+            paid_amt = subtotal if is_payer else 0.0
 
         details.append({
             "user_id": u_id,
             "user_name": u_name,
             "items": list(dishes.values()),
-            "subtotal": round(sum(i["cost"] for i in dishes.values()), 2),
+            "subtotal": subtotal,
             "paid": is_paid,
             "paid_amount": paid_amt,
         })

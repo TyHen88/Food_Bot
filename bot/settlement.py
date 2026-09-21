@@ -116,6 +116,12 @@ async def get_unpaid_invoices_for_user(user: Dict[str, Any]) -> List[Dict[str, A
 
     unpaid = []
     for inv in all_invoices:
+        # If the user is the payer of this invoice, they do not owe debt to themselves
+        p_uid = str(inv.get("payer_user_id") or "").strip()
+        p_name = str(inv.get("payer_name") or "").strip()
+        if p_uid == uid or is_same_person(uid, names, p_uid, {norm_name(p_name)}):
+            continue
+
         details = inv.get("details") or []
         for d in details:
             if is_same_person(d.get("user_id"), d.get("user_name"), uid, names):

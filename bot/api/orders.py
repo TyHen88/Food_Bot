@@ -531,85 +531,8 @@ class InvoiceBody(BaseModel):
     currencies: List[str] = ["USD"]
 
 
-def _build_invoice_text(
-    order_date: str,
-    user_orders: Dict[str, List[Dict[str, Any]]],
-    payer_name: str,
-    khqr_text: str = "",
-    rate: Optional[Dict[str, Any]] = None,
-    currencies: Any = None,
-) -> str:
-    """Render the invoice message (Telegram HTML).
-
-    `rate` is the NBC exchange-rate row pinned to this invoice; `currencies`
-    selects what the reader sees — dollars, riel, or both. Each person's
-    total is converted and rounded individually (see exchange.to_khr) so what
-    a member is asked for is a payable amount — which means the riel figures
-    do not necessarily add up to the riel grand total, and that is deliberate.
-
-    Item lines follow the same selection, EXCEPT that a riel-only invoice
-    still shows per-dish prices in riel only; nothing is ever silently
-    dropped, and without a rate everything falls back to dollars.
-
-    Format (currencies = USD + KHR):
-        🧾 Order Invoice | 2026-07-15
-        🏦 NBC 2026-07-15 · 4,047 KHR / USD
-
-        ▪️ Name
-        • dish ×1   $1.75 (7,100៛)
-        Subtotal   $3.50 (14,200៛)   (only when the person has 2+ items)
-
-        ══════════════════════
-        💰 Total Due   $14.00 (56,700៛)
-        💳 Pay to Name
-        ══════════════════════
-    """
-    from html import escape
-
-    usd_khr = float((rate or {}).get("usd_khr") or 0) or None
-    wanted = exchange.normalize_currencies(currencies)
-
-    def money(amount: float) -> str:
-        return exchange.format_money(amount, usd_khr, wanted)
-
-    sep = "══════════════════════"
-    lines = [f"🧾 <b>Order Invoice</b> | {escape(order_date)}"]
-    # The rate line only earns its place when riel is actually shown.
-    if usd_khr and "KHR" in wanted:
-        lines.append(
-            f"🏦 <i>NBC {escape(str((rate or {}).get('rate_date', '')))} · "
-            f"{escape(exchange.format_rate(usd_khr))}</i>"
-        )
-    lines.append("")
-
-    grand_total = 0.0
-    for user_name, user_items in user_orders.items():
-        user_total = sum(i["cost"] for i in user_items)
-        grand_total += user_total
-
-        lines.append(f"▪️ <b>{escape(user_name)}</b>")
-        for i in user_items:
-            lines.append(
-                f"• {escape(str(i['item_name']))} ×{i['qty']}   "
-                f"<code>{money(i['cost'])}</code>"
-            )
-        # One person, one dish: their line already IS their total, so only
-        # repeat it as a subtotal when there is more than one dish.
-        if len(user_items) > 1:
-            lines.append(f"<b>Subtotal</b>   <code>{money(user_total)}</code>")
-        lines.append("")
-
-    lines.append(sep)
-    lines.append(f"💰 <b>Total Due</b>   <code>{money(grand_total)}</code>")
-    lines.append(f"💳 <b>Pay to</b> {escape(payer_name)}")
-    lines.append(sep)
-
-    if khqr_text:
-        lines.append("")
-        lines.append("🔗 <b>Scan KHQR to Pay:</b>")
-        lines.append(f"<code>{escape(khqr_text)}</code>")
-
-    return "\n".join(lines)
+def _build_invoice_text(*args: Any, **kwargs: Any) -> str:
+    return build_invoice_text(*args, **kwargs)
 
 
 @router.post("/{order_id}/invoice")

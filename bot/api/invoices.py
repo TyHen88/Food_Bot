@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from .. import exchange
-from ..people import is_same_person, name_variants
+from ..people import is_same_person, name_variants, norm_name
 from ..sheets import invoices as sheets_invoices
 from ..sheets import payers as sheets_payers
 from ..sheets import repo
@@ -51,7 +51,7 @@ def _caller_names(auth: dict) -> set:
     )
 
 
-def _my_amount_and_paid(details: List[Dict[str, Any]], caller_id: str, caller_names: set) -> tuple[float, bool]:
+def _my_amount_and_paid(details: List[Dict[str, Any]], caller_id: str, caller_names: set, is_payer: bool = False) -> tuple[float, bool]:
     """Sum of caller's subtotals and whether they have fully paid."""
     total = 0.0
     paid = True
@@ -66,6 +66,8 @@ def _my_amount_and_paid(details: List[Dict[str, Any]], caller_id: str, caller_na
             pass
         if not d.get("paid"):
             paid = False
+    if is_payer and found:
+        paid = True
     return round(total, 2), (paid if found else False)
 
 
@@ -129,11 +131,19 @@ async def list_invoices(
         if date_to and order_date > date_to:
             continue
 
+        payer_id = str(r.get("payer_user_id") or "").strip()
+        payer_uname = str(r.get("payer_name") or "").strip()
+        payer_var = name_variants(username=payer_uname, full_name=payer_uname)
+        is_current_payer = bool(
+            (payer_id and payer_id == target_id)
+            or (target_names and norm_name(payer_uname) in target_names)
+        )
+
         details = r.get("details") or []
-        my_amount, my_paid = _my_amount_and_paid(details, target_id, target_names)
+        my_amount, my_paid = _my_amount_and_paid(details, target_id, target_names, is_payer=is_current_payer)
         rate = float(r.get("usd_khr_rate") or 0)
         effective_rate = rate if rate > 0 else system_rate
-        paid_count = sum(1 for d in details if d.get("paid"))
+        paid_count = sum(1 for d in details if d.get("paid") or is_same_person(d.get("user_id"), d.get("user_name"), payer_id, payer_var))
         all_paid = bool(details and paid_count == len(details))
 
         # Extract matched user's items for quick display on frontend
@@ -141,6 +151,31 @@ async def list_invoices(
         for d in details:
             if is_same_person(d.get("user_id"), d.get("user_name"), target_id, target_names):
                 my_items.extend(d.get("items") or [])
+
+        # Calculate payer receivables (members who haven't paid this payer yet)
+        payer_unpaid_amount = 0.0
+        payer_total_to_collect = 0.0
+        payer_unpaid_count = 0
+        unpaid_members: List[Dict[str, Any]] = []
+
+        for d in details:
+            d_uid = str(d.get("user_id") or "").strip()
+            d_uname = str(d.get("user_name") or "").strip()
+            # If not the payer themselves
+            if not is_same_person(d_uid, d_uname, payer_id, payer_var):
+                sub = float(d.get("subtotal") or 0.0)
+                payer_total_to_collect += sub
+                p_amt = float(d.get("paid_amount") or 0.0) if not d.get("paid") else sub
+                due = max(0.0, round(sub - p_amt, 2))
+                if due > 0.009:
+                    payer_unpaid_amount += due
+                    payer_unpaid_count += 1
+                    unpaid_members.append({
+                        "user_id": d_uid,
+                        "user_name": d_uname,
+                        "due": due,
+                        "items": d.get("items") or [],
+                    })
 
         chat_title = titles.get(r["chat_id"], "")
         total_val = float(r.get("total") or 0)
@@ -159,6 +194,11 @@ async def list_invoices(
             "usd_khr_rate": effective_rate,
             "my_amount_khr": my_amount_khr_val,
             "total_khr": total_khr_val,
+            "is_payer": is_current_payer,
+            "payer_unpaid_amount": round(payer_unpaid_amount, 2),
+            "payer_total_to_collect": round(payer_total_to_collect, 2),
+            "payer_unpaid_count": payer_unpaid_count,
+            "unpaid_members": unpaid_members,
         })
 
     out.sort(key=lambda r: (r.get("order_date") or "", r.get("last_sent_at") or ""), reverse=True)
@@ -266,9 +306,15 @@ async def resend_invoice(
         {"usd_khr": inv["usd_khr_rate"], "rate_date": inv["rate_date"]}
         if inv.get("usd_khr_rate") else None
     )
+    payer_names = name_variants(
+        username=inv.get("payer_name") or "",
+        full_name=(payer_row.get("full_name") if payer_row else "") or inv.get("payer_name") or "",
+    )
     text = _build_invoice_text(
         inv["order_date"], user_orders, inv["payer_name"], khqr_text, pinned_rate,
         inv.get("display_currencies"),
+        payer_user_id=inv.get("payer_user_id"),
+        payer_names=payer_names,
     )
 
     try:

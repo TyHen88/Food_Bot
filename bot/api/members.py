@@ -194,13 +194,23 @@ async def list_members(
     # Pre-extract invoice detail items once into parsed list to avoid nested re-parsing
     parsed_invoice_details: List[Dict[str, Any]] = []
     for inv in all_invoices:
+        p_uid = str(inv.get("payer_user_id") or "").strip()
+        p_name = str(inv.get("payer_name") or "").strip()
+        p_names = name_variants(username=p_name, full_name=p_name)
+        inv_id = str(inv.get("invoice_id") or inv.get("order_id") or "")
+        ord_date = str(inv.get("order_date") or "")
+
         for d in inv.get("details") or []:
             d_uid = str(d.get("user_id", "")).strip()
             d_uname = str(d.get("user_name", "")).strip()
             subtotal = float(d.get("subtotal") or 0.0)
-            is_paid = bool(d.get("paid"))
+
+            # Check if this entry belongs to the payer of this invoice
+            is_payer_self = is_same_person(d_uid, d_uname, p_uid, p_names)
+            is_paid = bool(d.get("paid")) or is_payer_self
             paid_amt = float(d.get("paid_amount") or 0.0) if not is_paid else subtotal
-            due = round(max(0.0, subtotal - paid_amt), 2)
+            due = 0.0 if is_payer_self else round(max(0.0, subtotal - paid_amt), 2)
+
             parsed_invoice_details.append({
                 "user_id": d_uid,
                 "user_name": d_uname,
@@ -208,6 +218,11 @@ async def list_members(
                 "is_paid": is_paid,
                 "paid_amt": paid_amt,
                 "due": due,
+                "is_payer": is_payer_self,
+                "payer_user_id": p_uid,
+                "payer_name": p_name,
+                "invoice_id": inv_id,
+                "order_date": ord_date,
             })
 
     out: List[Dict[str, Any]] = []
@@ -244,14 +259,19 @@ async def list_members(
         if is_active:
             total_active += 1
 
-        # Calculate remaining unpaid debt and total spending for this user
+        # Calculate remaining unpaid debt, spending, and payer receivables for this user
         u_names = name_variants(username=username, full_name=full_name)
         total_spend = 0.0
         unpaid_debt = 0.0
         paid_spend = 0.0
         unpaid_invoices_count = 0
+        owed_to_payers: List[Dict[str, Any]] = []
+
+        payer_receivables = 0.0
+        pending_debtors: List[Dict[str, Any]] = []
 
         for d in parsed_invoice_details:
+            # 1. As a diner/member: what I spent and owe to other payers
             if is_same_person(d["user_id"], d["user_name"], uid, u_names):
                 subtotal = d["subtotal"]
                 is_paid = d["is_paid"]
@@ -265,6 +285,25 @@ async def list_members(
                     if due > 0.009:
                         unpaid_debt += due
                         unpaid_invoices_count += 1
+                        owed_to_payers.append({
+                            "payer_name": d["payer_name"],
+                            "payer_user_id": d["payer_user_id"],
+                            "amount": due,
+                            "order_date": d["order_date"],
+                            "invoice_id": d["invoice_id"],
+                        })
+
+            # 2. As a payer: what other members owe me for orders I fronted
+            if is_same_person(d["payer_user_id"], d["payer_name"], uid, u_names) and not d["is_payer"]:
+                if d["due"] > 0.009:
+                    payer_receivables += d["due"]
+                    pending_debtors.append({
+                        "user_name": d["user_name"],
+                        "user_id": d["user_id"],
+                        "amount": d["due"],
+                        "order_date": d["order_date"],
+                        "invoice_id": d["invoice_id"],
+                    })
 
         total_group_debt += unpaid_debt
 
@@ -281,6 +320,9 @@ async def list_members(
             "total_spend": round(total_spend, 2),
             "paid_spend": round(paid_spend, 2),
             "unpaid_invoices_count": unpaid_invoices_count,
+            "payer_receivables": round(payer_receivables, 2),
+            "owed_to_payers": owed_to_payers,
+            "pending_debtors": pending_debtors,
         })
 
     # Active first, then by name.
@@ -300,11 +342,16 @@ async def list_members(
         ]
 
     total_count = len(filtered)
+    total_payers_waiting = sum(1 for m in out if m["payer_receivables"] > 0.009)
+    total_receivables = sum(m["payer_receivables"] for m in out)
+
     stats_data = {
         "total": len(out),
         "admins": total_admins,
         "active": total_active,
         "total_debt": round(total_group_debt, 2),
+        "total_receivables": round(total_receivables, 2),
+        "total_payers_waiting": total_payers_waiting,
     }
 
     if page is not None:
