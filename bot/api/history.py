@@ -1,5 +1,8 @@
 """
 /api/history — paginated read of the audit log with chat and user resolution.
+
+Admin-only: the log spans every chat and records settings changes, invoice
+sends and payments, so it is not member data.
 """
 
 import asyncio
@@ -11,7 +14,7 @@ from fastapi import APIRouter, Depends, Query
 
 from ..sheets import repo
 from ..sheets.client import is_configured
-from .auth import require_member
+from .auth import require_admin
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +57,7 @@ async def list_history(
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     event_type: Optional[str] = Query(default=None),
-    _: dict = Depends(require_member),
+    _: dict = Depends(require_admin),
 ) -> Dict[str, Any]:
     if not is_configured():
         return {"items": [], "total": 0, "limit": limit, "offset": offset}

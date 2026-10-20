@@ -15,14 +15,14 @@ from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from .. import exchange
-from ..people import is_same_person, name_variants, norm_name
+from ..people import is_same_person, name_variants
 from ..sheets import invoices as sheets_invoices
 from ..sheets import payers as sheets_payers
 from ..sheets import repo
 from ..sheets.client import is_configured
 from .auth import caller_chat_id, caller_user_id, require_admin, require_member
 from .members import user_chats
-from .orders import _build_invoice_text, _chat_titles, payer_qr_data_uri, send_invoice_message
+from .orders import _build_invoice_text, _chat_titles, caller_names, payer_qr_data_uri, send_invoice_message
 
 logger = logging.getLogger(__name__)
 
@@ -40,20 +40,12 @@ async def _allowed_chats(auth: dict) -> Optional[set]:
     return chats
 
 
-def _caller_names(auth: dict) -> set:
-    """Normalized display-name candidates for the caller, used to match old
-    invoice details that predate the per-entry user_id field."""
-    u = auth.get("user") or {}
-    return name_variants(
-        username=u.get("username") or "",
-        first_name=u.get("first_name") or "",
-        last_name=u.get("last_name") or "",
-    )
-
-
-def _my_amount_and_paid(details: List[Dict[str, Any]], caller_id: str, caller_names: set, is_payer: bool = False) -> tuple[float, bool]:
-    """Sum of caller's subtotals and whether they have fully paid."""
+def _my_share(details: List[Dict[str, Any]], caller_id: str, caller_names: set, is_payer: bool = False) -> tuple[float, bool, float]:
+    """(amount, paid, due) for the caller: the sum of their subtotals,
+    whether they have fully paid, and what is still owed after partial
+    payments. The payer never owes themselves."""
     total = 0.0
+    due = 0.0
     paid = True
     found = False
     for d in details or []:
@@ -61,14 +53,20 @@ def _my_amount_and_paid(details: List[Dict[str, Any]], caller_id: str, caller_na
             continue
         found = True
         try:
-            total += float(d.get("subtotal") or 0)
+            subtotal = float(d.get("subtotal") or 0)
         except (TypeError, ValueError):
-            pass
+            subtotal = 0.0
+        total += subtotal
         if not d.get("paid"):
             paid = False
+            try:
+                paid_amount = float(d.get("paid_amount") or 0)
+            except (TypeError, ValueError):
+                paid_amount = 0.0
+            due += max(0.0, subtotal - paid_amount)
     if is_payer and found:
-        paid = True
-    return round(total, 2), (paid if found else False)
+        paid, due = True, 0.0
+    return round(total, 2), (paid if found else False), round(due, 2)
 
 
 @router.get("")
@@ -105,11 +103,12 @@ async def list_invoices(
 
     # Determine target user for calculating personal invoice amounts
     target_id = caller_id
-    target_names = _caller_names(auth)
+    target_names = await caller_names(auth)
     if user_id and str(user_id).strip():
         req_uid = str(user_id).strip()
-        if auth.get("is_admin") or req_uid == caller_id:
+        if auth.get("is_admin") and req_uid != caller_id:
             target_id = req_uid
+            target_names = set()
             if is_configured():
                 u_row = await repo.find_by_pk("user", target_id)
                 if u_row:
@@ -117,15 +116,15 @@ async def list_invoices(
                         username=u_row.get("username") or "",
                         full_name=u_row.get("full_name") or "",
                     )
-            if not target_names and req_uid == caller_id:
-                target_names = _caller_names(auth)
 
     curr_rate_row = await exchange.current()
     system_rate = float((curr_rate_row or {}).get("usd_khr") or 4047)
 
     out = []
     for r in rows:
-        order_date = str(r.get("order_date") or "")
+        # Compare the date part only, as orders.list_in_range does, so a
+        # stray time suffix can't push an order outside an inclusive bound.
+        order_date = str(r.get("order_date") or "")[:10]
         if date_from and order_date < date_from:
             continue
         if date_to and order_date > date_to:
@@ -134,13 +133,10 @@ async def list_invoices(
         payer_id = str(r.get("payer_user_id") or "").strip()
         payer_uname = str(r.get("payer_name") or "").strip()
         payer_var = name_variants(username=payer_uname, full_name=payer_uname)
-        is_current_payer = bool(
-            (payer_id and payer_id == target_id)
-            or (target_names and norm_name(payer_uname) in target_names)
-        )
+        is_current_payer = is_same_person(payer_id, payer_uname, target_id, target_names)
 
         details = r.get("details") or []
-        my_amount, my_paid = _my_amount_and_paid(details, target_id, target_names, is_payer=is_current_payer)
+        my_amount, my_paid, my_due = _my_share(details, target_id, target_names, is_payer=is_current_payer)
         rate = float(r.get("usd_khr_rate") or 0)
         effective_rate = rate if rate > 0 else system_rate
         paid_count = sum(1 for d in details if d.get("paid") or is_same_person(d.get("user_id"), d.get("user_name"), payer_id, payer_var))
@@ -190,9 +186,11 @@ async def list_invoices(
             "all_paid": all_paid,
             "my_amount": my_amount,
             "my_paid": my_paid,
+            "my_due": my_due,
             "my_items": my_items,
             "usd_khr_rate": effective_rate,
             "my_amount_khr": my_amount_khr_val,
+            "my_due_khr": exchange.to_khr(my_due, effective_rate),
             "total_khr": total_khr_val,
             "is_payer": is_current_payer,
             "payer_unpaid_amount": round(payer_unpaid_amount, 2),

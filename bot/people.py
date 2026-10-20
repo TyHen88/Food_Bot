@@ -69,14 +69,18 @@ def name_variants(
 
 
 def is_same_person(entry_uid: Any, entry_name: Any, uid: Any, names: Set[str]) -> bool:
-    """Does an order-item / invoice-detail entry belong to `uid` or `names`?"""
+    """Does an order-item / invoice-detail entry belong to `uid` or `names`?
+
+    When both sides carry a user_id the ids alone decide — names are only a
+    fallback for entries (or targets) that have no id. Matching by name
+    across two different ids merged members who share a first name: one
+    person's dishes, debts and unpaid status showed up on the other's page.
+    """
     euid = str(entry_uid or "").strip()
     target = str(uid or "").strip()
-    if euid and target and euid == target:
-        return True
-    if names and norm_name(entry_name) in names:
-        return True
-    return False
+    if euid and target:
+        return euid == target
+    return bool(names) and norm_name(entry_name) in names
 
 
 def build_uid_index(entries: Iterable[Tuple[Any, Any]]) -> Dict[str, Optional[str]]:

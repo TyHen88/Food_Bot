@@ -134,32 +134,36 @@ def _dev_bypass_user_id() -> int:
     return int(dev_user_id)
 
 
+def _authenticate(init_data: Optional[str]) -> dict:
+    """The verified initData for this request, or 401.
+
+    Local dev shortcut: if DEV_BYPASS_AUTH is set AND WEBHOOK_URL is empty, a
+    request whose initData doesn't verify (a plain browser sends none) is
+    treated as the first ADMIN_USER_IDS entry. initData that DOES verify
+    keeps its real user, so opening a local backend from Telegram with a
+    member account gets member access — not everyone becoming the dev user.
+    """
+    parsed = _verify_signature(init_data or "")
+    if parsed:
+        return parsed
+    if _dev_bypass_active():
+        return {"user": {"id": _dev_bypass_user_id(), "first_name": "dev"}, "auth_date": "0"}
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or missing Telegram init data",
+    )
+
+
 async def require_admin(
     x_telegram_init_data: Optional[str] = Header(default=None),
 ) -> dict:
     """
     FastAPI dependency: verify initData and that the user has ADMIN role.
-    Returns the parsed initData (with `user` already decoded).
-
-    Local dev shortcut: if DEV_BYPASS_AUTH is set AND WEBHOOK_URL is empty,
-    the first ADMIN_USER_IDS entry is treated as the caller (no HMAC check)
-    — but their admin role is still checked against the `user` tab.
+    Returns the parsed initData (with `user` already decoded). The admin
+    role is always checked against the `user` tab — the dev-bypass identity
+    included.
     """
-    if _dev_bypass_active():
-        dev_user_id = _dev_bypass_user_id()
-        if not await is_admin(dev_user_id):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Admin role required",
-            )
-        return {"user": {"id": dev_user_id, "first_name": "dev"}, "auth_date": "0"}
-
-    parsed = _verify_signature(x_telegram_init_data or "")
-    if not parsed:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing Telegram init data",
-        )
+    parsed = _authenticate(x_telegram_init_data)
     user = parsed.get("user") or {}
     user_id = user.get("id")
     if not user_id or not await is_admin(int(user_id)):
@@ -178,23 +182,10 @@ async def require_member(
     call (admin OR regular member). Returns the parsed initData with an
     `is_admin` flag derived from the `user` tab role.
 
-    Local-dev DEV_BYPASS_AUTH still applies — but `is_admin` reflects the
-    real role on the user row, never a hardcoded True.
+    Local-dev DEV_BYPASS_AUTH still applies (see `_authenticate`) — but
+    `is_admin` reflects the real role on the user row, never a hardcoded True.
     """
-    if _dev_bypass_active():
-        dev_user_id = _dev_bypass_user_id()
-        return {
-            "user": {"id": dev_user_id, "first_name": "dev"},
-            "auth_date": "0",
-            "is_admin": await is_admin(dev_user_id),
-        }
-
-    parsed = _verify_signature(x_telegram_init_data or "")
-    if not parsed:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing Telegram init data",
-        )
+    parsed = _authenticate(x_telegram_init_data)
     user = parsed.get("user") or {}
     user_id = user.get("id")
     if not user_id:

@@ -19,7 +19,7 @@ import logging
 import mimetypes
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status, Request
 from pydantic import BaseModel
@@ -112,6 +112,35 @@ async def _user_names() -> Dict[str, str]:
     return out
 
 
+async def caller_names(auth: dict) -> Set[str]:
+    """Display-name variants for the verified caller — their `user` row plus
+    the Telegram profile in initData — for matching legacy entries that have
+    no user_id."""
+    u = auth.get("user") or {}
+    names = name_variants(
+        username=u.get("username") or "",
+        first_name=u.get("first_name") or "",
+        last_name=u.get("last_name") or "",
+    )
+    uid = caller_user_id(auth)
+    if uid and is_configured():
+        row = await repo.find_by_pk("user", uid)
+        if row:
+            names |= name_variants(
+                username=row.get("username") or "",
+                full_name=row.get("full_name") or "",
+            )
+    return names
+
+
+async def _viewer(auth: dict) -> Optional[Tuple[str, Set[str]]]:
+    """None for admins (whole group order); (user_id, names) for a member,
+    whose orders get trimmed to their own dishes by `_shape_order`."""
+    if auth.get("is_admin"):
+        return None
+    return caller_user_id(auth), await caller_names(auth)
+
+
 def _paid_by_display(row: Dict[str, Any], users: Dict[str, str]) -> str:
     """Best display name for the payer: user-tab username, else stored
     username, else empty (the frontend then shows the id as a last resort)."""
@@ -125,13 +154,22 @@ def _shape_order(
     titles: Dict[str, str],
     polls: Dict[str, Dict[str, str]],
     users: Dict[str, str],
+    viewer: Optional[Tuple[str, Set[str]]] = None,
 ) -> Dict[str, Any]:
     """Map a raw `order` row to the calendar's event shape.
 
-    Shows the whole group order (every voter's items) — the calendar is a
-    shared view, scoped to a chat via the `chat_id` query param.
+    Admins (`viewer` None) get the whole group order, every voter's items.
+    For a member, `viewer` is their (user_id, names) from `_viewer` and the
+    items — and the counts derived from them — are trimmed to their own
+    dishes.
     """
     items = _parse_items(row.get("item"))
+    if viewer is not None:
+        uid, names = viewer
+        items = [
+            it for it in items
+            if is_same_person(it.get("user_id"), it.get("name"), uid, names)
+        ]
 
     cid = str(row.get("chat_id", ""))
     pid = str(row.get("poll_id", ""))
@@ -208,33 +246,32 @@ async def list_orders(
     polls = await _poll_meta()
     users = await _user_names()
     invoiced = await sheets_invoices.order_ids_with_invoice()
+    viewer = await _viewer(auth)
 
     out = [
         {
-            **_shape_order(row, titles=titles, polls=polls, users=users),
+            **_shape_order(row, titles=titles, polls=polls, users=users, viewer=viewer),
             "has_invoice": str(row.get("order_id", "")).strip() in invoiced,
         }
         for row in rows
     ]
+    if viewer is not None:
+        # Members only see orders they took part in: as a diner, or as payer.
+        out = [o for o in out if o["items"] or o["paid_by"]["user_id"] == viewer[0]]
 
     # Filter for specific user if requested
     target_user_id = caller_user_id(auth) if my_only else (str(user_id).strip() if user_id else None)
     if target_user_id:
-        target_names = set()
-        if is_configured():
+        target_names: Set[str] = set()
+        if target_user_id == caller_user_id(auth):
+            target_names = await caller_names(auth)
+        elif is_configured():
             u_row = await repo.find_by_pk("user", target_user_id)
             if u_row:
                 target_names = name_variants(
                     username=u_row.get("username") or "",
                     full_name=u_row.get("full_name") or "",
                 )
-        if not target_names and (my_only or target_user_id == caller_user_id(auth)):
-            u_dict = auth.get("user") or {}
-            target_names = name_variants(
-                username=u_dict.get("username") or "",
-                first_name=u_dict.get("first_name") or "",
-                last_name=u_dict.get("last_name") or "",
-            )
 
         def has_user(ord_dict: Dict[str, Any]) -> bool:
             if str(ord_dict.get("paid_by", {}).get("user_id", "")).strip() == target_user_id:
@@ -304,8 +341,14 @@ async def get_order(
     polls = await _poll_meta()
     users = await _user_names()
     invoiced = await sheets_invoices.order_ids_with_invoice()
+    viewer = await _viewer(auth)
+    shaped = _shape_order(row, titles=titles, polls=polls, users=users, viewer=viewer)
+    if viewer is not None and not shaped["items"] and shaped["paid_by"]["user_id"] != viewer[0]:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Order not found"
+        )
     return {
-        **_shape_order(row, titles=titles, polls=polls, users=users),
+        **shaped,
         "has_invoice": str(row.get("order_id", "")).strip() in invoiced,
     }
 
