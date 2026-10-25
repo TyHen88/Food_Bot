@@ -123,9 +123,20 @@ async def get_unpaid_invoices_for_user(user: Dict[str, Any]) -> List[Dict[str, A
         for d in details:
             if is_same_person(d.get("user_id"), d.get("user_name"), uid, names):
                 subtotal = float(d.get("subtotal") or 0.0)
-                is_paid = bool(d.get("paid"))
+                raw_paid = bool(d.get("paid"))
+                payment_id = str(d.get("payment_id") or "").strip()
+                paid_at = str(d.get("paid_at") or "").strip()
                 paid_amount = float(d.get("paid_amount") or 0.0)
-                due = round(subtotal - (subtotal if is_paid else paid_amount), 2)
+
+                # Ignore ghost auto-paid flag without recorded transaction or admin settle
+                if raw_paid and not payment_id and not paid_at and paid_amount <= 0.0:
+                    raw_paid = False
+                    paid_amount = 0.0
+
+                if raw_paid and paid_amount <= 0.0:
+                    paid_amount = subtotal
+
+                due = round(max(0.0, subtotal - (subtotal if raw_paid else paid_amount)), 2)
                 if due > 0.009:  # More than 1 cent due
                     unpaid.append({
                         "invoice_id": inv["invoice_id"],

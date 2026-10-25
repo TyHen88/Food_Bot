@@ -367,16 +367,22 @@ async def generate_and_send_invoice(
         u_name = display_names[key]
         prev_record = existing_paid_map.get(u_id) or existing_paid_map.get(u_name) or {}
 
-        is_payer = is_same_person(u_id, u_name, payer_id, payer_names)
         subtotal = round(sum(i["cost"] for i in dishes.values()), 2)
+        payment_id = str(prev_record.get("payment_id") or "").strip()
+        paid_at = str(prev_record.get("paid_at") or "").strip()
+        prev_paid_amt = float(prev_record.get("paid_amount") or 0.0)
 
-        if "paid" in prev_record:
+        # A record is only preserved as paid if it has a real payment transaction ID,
+        # an admin settlement reference, or a recorded paid timestamp.
+        if "paid" in prev_record and (payment_id or paid_at or prev_paid_amt > 0.0):
             is_paid = bool(prev_record.get("paid", False))
-            paid_amt = float(prev_record.get("paid_amount", 0.0)) if is_paid else float(prev_record.get("paid_amount", 0.0))
+            paid_amt = prev_paid_amt if prev_paid_amt > 0.0 else (subtotal if is_paid else 0.0)
         else:
-            # Payer pays the restaurant upfront, so their own meal is auto-paid
-            is_paid = is_payer
-            paid_amt = subtotal if is_payer else 0.0
+            # Do not auto-mark diners or poll clickers as paid without recorded payment
+            is_paid = False
+            paid_amt = 0.0
+            payment_id = ""
+            paid_at = ""
 
         details.append({
             "user_id": u_id,
@@ -385,6 +391,8 @@ async def generate_and_send_invoice(
             "subtotal": subtotal,
             "paid": is_paid,
             "paid_amount": paid_amt,
+            "payment_id": payment_id,
+            "paid_at": paid_at,
         })
 
     await sheets_invoices.save_sent(

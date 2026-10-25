@@ -40,10 +40,37 @@ async def _allowed_chats(auth: dict) -> Optional[set]:
     return chats
 
 
-def _my_share(details: List[Dict[str, Any]], caller_id: str, caller_names: set, is_payer: bool = False) -> tuple[float, bool, float]:
+def _parse_detail_payment(d: Dict[str, Any]) -> Tuple[bool, float, float]:
+    """Parse payment state from detail record; guards against ghost auto-paid flags."""
+    try:
+        subtotal = float(d.get("subtotal") or 0.0)
+    except (TypeError, ValueError):
+        subtotal = 0.0
+
+    raw_paid = bool(d.get("paid"))
+    payment_id = str(d.get("payment_id") or "").strip()
+    paid_at = str(d.get("paid_at") or "").strip()
+    try:
+        paid_amt = float(d.get("paid_amount") or 0.0)
+    except (TypeError, ValueError):
+        paid_amt = 0.0
+
+    # Disregard auto-paid ghost flags where no payment record or admin settle exists
+    if raw_paid and not payment_id and not paid_at and paid_amt <= 0.0:
+        raw_paid = False
+        paid_amt = 0.0
+
+    if raw_paid and paid_amt <= 0.0:
+        paid_amt = subtotal
+
+    due = max(0.0, round(subtotal - (subtotal if raw_paid else paid_amt), 2))
+    is_paid = raw_paid or (due <= 0.009 and subtotal > 0)
+    return is_paid, paid_amt, due
+
+
+def _my_share(details: List[Dict[str, Any]], caller_id: str, caller_names: set, is_payer: bool = False) -> Tuple[float, bool, float]:
     """(amount, paid, due) for the caller: the sum of their subtotals,
-    whether they have fully paid, and what is still owed after partial
-    payments. The payer never owes themselves."""
+    whether they have fully paid, and what is still owed after partial payments."""
     total = 0.0
     due = 0.0
     paid = True
@@ -52,20 +79,11 @@ def _my_share(details: List[Dict[str, Any]], caller_id: str, caller_names: set, 
         if not is_same_person(d.get("user_id"), d.get("user_name"), caller_id, caller_names):
             continue
         found = True
-        try:
-            subtotal = float(d.get("subtotal") or 0)
-        except (TypeError, ValueError):
-            subtotal = 0.0
-        total += subtotal
-        if not d.get("paid"):
+        is_p, p_amt, d_due = _parse_detail_payment(d)
+        total += float(d.get("subtotal") or 0.0)
+        due += d_due
+        if not is_p:
             paid = False
-            try:
-                paid_amount = float(d.get("paid_amount") or 0)
-            except (TypeError, ValueError):
-                paid_amount = 0.0
-            due += max(0.0, subtotal - paid_amount)
-    if is_payer and found:
-        paid, due = True, 0.0
     return round(total, 2), (paid if found else False), round(due, 2)
 
 
@@ -149,8 +167,51 @@ async def list_invoices(
         my_amount, my_paid, my_due = _my_share(details, target_id, target_names, is_payer=is_current_payer)
         rate = float(r.get("usd_khr_rate") or 0)
         effective_rate = rate if rate > 0 else system_rate
-        paid_count = sum(1 for d in details if d.get("paid") or is_same_person(d.get("user_id"), d.get("user_name"), payer_id, payer_var))
-        all_paid = bool(details and paid_count == len(details))
+        paid_members: List[Dict[str, Any]] = []
+        unpaid_members: List[Dict[str, Any]] = []
+        parsed_details: List[Dict[str, Any]] = []
+
+        for d in details:
+            d_uid = str(d.get("user_id") or "").strip()
+            d_uname = str(d.get("user_name") or "").strip()
+            sub = float(d.get("subtotal") or 0.0)
+            is_p, p_amt, due = _parse_detail_payment(d)
+
+            d_enriched = {
+                "user_id": d_uid,
+                "user_name": d_uname,
+                "subtotal": sub,
+                "paid": is_p,
+                "paid_amount": p_amt,
+                "due": due,
+                "payment_id": str(d.get("payment_id") or ""),
+                "paid_at": str(d.get("paid_at") or ""),
+                "items": d.get("items") or [],
+            }
+            parsed_details.append(d_enriched)
+
+            if is_p:
+                paid_members.append({
+                    "user_id": d_uid,
+                    "user_name": d_uname,
+                    "amount": p_amt if p_amt > 0 else sub,
+                    "amount_khr": exchange.to_khr(p_amt if p_amt > 0 else sub, effective_rate),
+                    "paid_at": str(d.get("paid_at") or ""),
+                    "payment_id": str(d.get("payment_id") or ""),
+                    "items": d.get("items") or [],
+                })
+            else:
+                unpaid_members.append({
+                    "user_id": d_uid,
+                    "user_name": d_uname,
+                    "subtotal": sub,
+                    "due": due,
+                    "due_khr": exchange.to_khr(due, effective_rate),
+                    "items": d.get("items") or [],
+                })
+
+        paid_count = len(paid_members)
+        all_paid = bool(details and len(unpaid_members) == 0)
 
         # Extract matched user's items for quick display on frontend
         my_items = []
@@ -158,30 +219,10 @@ async def list_invoices(
             if is_same_person(d.get("user_id"), d.get("user_name"), target_id, target_names):
                 my_items.extend(d.get("items") or [])
 
-        # Calculate payer receivables (members who haven't paid this payer yet)
-        payer_unpaid_amount = 0.0
-        payer_total_to_collect = 0.0
-        payer_unpaid_count = 0
-        unpaid_members: List[Dict[str, Any]] = []
-
-        for d in details:
-            d_uid = str(d.get("user_id") or "").strip()
-            d_uname = str(d.get("user_name") or "").strip()
-            # If not the payer themselves
-            if not is_same_person(d_uid, d_uname, payer_id, payer_var):
-                sub = float(d.get("subtotal") or 0.0)
-                payer_total_to_collect += sub
-                p_amt = float(d.get("paid_amount") or 0.0) if not d.get("paid") else sub
-                due = max(0.0, round(sub - p_amt, 2))
-                if due > 0.009:
-                    payer_unpaid_amount += due
-                    payer_unpaid_count += 1
-                    unpaid_members.append({
-                        "user_id": d_uid,
-                        "user_name": d_uname,
-                        "due": due,
-                        "items": d.get("items") or [],
-                    })
+        # Calculate payer receivables
+        payer_total_to_collect = sum(m["subtotal"] for m in unpaid_members)
+        payer_unpaid_amount = sum(m["due"] for m in unpaid_members)
+        payer_unpaid_count = len(unpaid_members)
 
         chat_title = titles.get(r["chat_id"], "")
         total_val = float(r.get("total") or 0)
@@ -190,9 +231,11 @@ async def list_invoices(
 
         out.append({
             **{k: v for k, v in r.items() if k != "details"},
+            "details": parsed_details,
             "chat_title": chat_title,
             "person_count": len(details),
             "paid_count": paid_count,
+            "unpaid_count": len(unpaid_members),
             "all_paid": all_paid,
             "my_amount": my_amount,
             "my_paid": my_paid,
@@ -206,6 +249,7 @@ async def list_invoices(
             "payer_unpaid_amount": round(payer_unpaid_amount, 2),
             "payer_total_to_collect": round(payer_total_to_collect, 2),
             "payer_unpaid_count": payer_unpaid_count,
+            "paid_members": paid_members,
             "unpaid_members": unpaid_members,
         })
 
@@ -248,6 +292,116 @@ async def list_invoices(
         }
 
     return filtered
+
+
+@router.get("/day-summary")
+async def get_day_summary(
+    date: str = Query(..., description="Target date in YYYY-MM-DD format"),
+    chat_id: Optional[str] = Query(None, description="Scope to a specific chat group."),
+    auth: dict = Depends(require_member),
+) -> Dict[str, Any]:
+    """
+    Returns unified payment summary for a specific calendar day:
+    who has paid, who has not paid, amount collected, and outstanding debt.
+    """
+    target_day = date.strip()[:10]
+    inv_list = await sheets_invoices.list_all()
+    if chat_id:
+        wanted_chat = str(chat_id).strip()
+        inv_list = [inv for inv in inv_list if str(inv.get("chat_id", "")).strip() == wanted_chat]
+
+    curr_rate_row = await exchange.current()
+    system_rate = float((curr_rate_row or {}).get("usd_khr") or 4047)
+    titles = await _chat_titles()
+
+    # Match invoices for this day
+    day_invoices = [inv for inv in inv_list if str(inv.get("order_date", ""))[:10] == target_day]
+
+    total_spend = 0.0
+    total_paid = 0.0
+    total_due = 0.0
+    paid_members_map: Dict[str, Dict[str, Any]] = {}
+    unpaid_members_map: Dict[str, Dict[str, Any]] = {}
+    orders_info: List[Dict[str, Any]] = []
+
+    for inv in day_invoices:
+        inv_id = str(inv.get("invoice_id") or inv.get("order_id") or "")
+        cid = str(inv.get("chat_id") or "")
+        rate = float(inv.get("usd_khr_rate") or 0) or system_rate
+        details = inv.get("details") or []
+        inv_total = float(inv.get("total") or 0.0)
+        total_spend += inv_total
+
+        orders_info.append({
+            "invoice_id": inv_id,
+            "order_id": inv_id,
+            "chat_id": cid,
+            "chat_title": titles.get(cid, ""),
+            "payer_name": inv.get("payer_name") or "",
+            "payer_user_id": inv.get("payer_user_id") or "",
+            "total": inv_total,
+            "total_khr": exchange.to_khr(inv_total, rate),
+            "item_count": sum(len(d.get("items") or []) for d in details),
+        })
+
+        for d in details:
+            d_uid = str(d.get("user_id") or "").strip()
+            d_uname = str(d.get("user_name") or "Guest").strip()
+            sub = float(d.get("subtotal") or 0.0)
+            is_p, p_amt, due = _parse_detail_payment(d)
+
+            member_key = d_uid or d_uname
+            if is_p:
+                total_paid += p_amt if p_amt > 0 else sub
+                if member_key in paid_members_map:
+                    paid_members_map[member_key]["amount"] += (p_amt if p_amt > 0 else sub)
+                    paid_members_map[member_key]["items"].extend(d.get("items") or [])
+                else:
+                    paid_members_map[member_key] = {
+                        "user_id": d_uid,
+                        "user_name": d_uname,
+                        "amount": p_amt if p_amt > 0 else sub,
+                        "amount_khr": exchange.to_khr(p_amt if p_amt > 0 else sub, rate),
+                        "paid_at": str(d.get("paid_at") or ""),
+                        "payment_id": str(d.get("payment_id") or ""),
+                        "items": list(d.get("items") or []),
+                    }
+            else:
+                total_due += due
+                if member_key in unpaid_members_map:
+                    unpaid_members_map[member_key]["subtotal"] += sub
+                    unpaid_members_map[member_key]["due"] += due
+                    unpaid_members_map[member_key]["items"].extend(d.get("items") or [])
+                else:
+                    unpaid_members_map[member_key] = {
+                        "user_id": d_uid,
+                        "user_name": d_uname,
+                        "subtotal": sub,
+                        "due": due,
+                        "due_khr": exchange.to_khr(due, rate),
+                        "items": list(d.get("items") or []),
+                    }
+
+    paid_list = list(paid_members_map.values())
+    unpaid_list = list(unpaid_members_map.values())
+
+    return {
+        "date": target_day,
+        "chat_id": chat_id,
+        "total_spend": round(total_spend, 2),
+        "total_paid": round(total_paid, 2),
+        "total_due": round(total_due, 2),
+        "total_spend_khr": exchange.to_khr(total_spend, system_rate),
+        "total_paid_khr": exchange.to_khr(total_paid, system_rate),
+        "total_due_khr": exchange.to_khr(total_due, system_rate),
+        "usd_khr_rate": system_rate,
+        "paid_count": len(paid_list),
+        "unpaid_count": len(unpaid_list),
+        "all_paid": bool(day_invoices and len(unpaid_list) == 0),
+        "paid_members": paid_list,
+        "unpaid_members": unpaid_list,
+        "orders": orders_info,
+    }
 
 
 async def _get_visible_invoice(invoice_id: str, auth: dict) -> Dict[str, Any]:

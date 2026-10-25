@@ -233,9 +233,21 @@ async def list_members(
 
             # Check if this entry belongs to the payer of this invoice
             is_payer_self = is_same_person(d_uid, d_uname, p_uid, p_names)
-            is_paid = bool(d.get("paid")) or is_payer_self
-            paid_amt = float(d.get("paid_amount") or 0.0) if not is_paid else subtotal
-            due = 0.0 if is_payer_self else round(max(0.0, subtotal - paid_amt), 2)
+            raw_paid = bool(d.get("paid"))
+            payment_id = str(d.get("payment_id") or "").strip()
+            paid_at = str(d.get("paid_at") or "").strip()
+            paid_amt = float(d.get("paid_amount") or 0.0)
+
+            # Disregard auto-paid ghost flags where no payment record or admin settle exists
+            if raw_paid and not payment_id and not paid_at and paid_amt <= 0.0:
+                raw_paid = False
+                paid_amt = 0.0
+
+            if raw_paid and paid_amt <= 0.0:
+                paid_amt = subtotal
+
+            due = 0.0 if raw_paid else round(max(0.0, subtotal - paid_amt), 2)
+            is_paid = raw_paid or (due <= 0.009 and subtotal > 0)
 
             parsed_invoice_details.append({
                 "user_id": d_uid,
@@ -249,6 +261,8 @@ async def list_members(
                 "payer_name": p_name,
                 "invoice_id": inv_id,
                 "order_date": ord_date,
+                "payment_id": payment_id,
+                "paid_at": paid_at,
             })
 
     out: List[Dict[str, Any]] = []
