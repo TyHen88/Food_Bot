@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, Query
 
 from ..sheets import repo
 from ..sheets.client import is_configured
-from .auth import require_admin
+from .auth import caller_chat_id, require_admin
 
 logger = logging.getLogger(__name__)
 
@@ -57,12 +57,33 @@ async def list_history(
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     event_type: Optional[str] = Query(default=None),
-    _: dict = Depends(require_admin),
+    chat_id: Optional[str] = Query(default=None, description="Scope audit log to a specific chat group."),
+    auth: dict = Depends(require_admin),
 ) -> Dict[str, Any]:
     if not is_configured():
         return {"items": [], "total": 0, "limit": limit, "offset": offset}
 
+    if not chat_id:
+        chat_id = caller_chat_id(auth)
+
     rows = await repo.list_all("history")
+    if chat_id:
+        wanted = str(chat_id).strip()
+        def _match_chat(r: Dict[str, Any]) -> bool:
+            cid = str(r.get("chat_id", "")).strip()
+            if cid == wanted:
+                return True
+            payload = r.get("payload")
+            if isinstance(payload, str) and payload.strip():
+                try:
+                    payload = json.loads(payload)
+                except Exception:
+                    payload = None
+            if isinstance(payload, dict):
+                return str(payload.get("chat_id", "")).strip() == wanted
+            return False
+        rows = [r for r in rows if _match_chat(r)]
+
     if event_type and event_type != "ALL":
         rows = [r for r in rows if str(r.get("event_type", "")).upper() == event_type.upper()]
     

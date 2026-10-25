@@ -84,6 +84,16 @@ async def list_invoices(
     auth_chat = caller_chat_id(auth)
     if not chat_id:
         chat_id = auth_chat
+    if not chat_id:
+        caller_id = caller_user_id(auth)
+        if caller_id and is_configured():
+            u_row = await repo.find_by_pk("user", caller_id)
+            if u_row and str(u_row.get("chat_id", "")).strip():
+                chat_id = str(u_row.get("chat_id")).strip()
+        if not chat_id and caller_id:
+            m_chats = await user_chats(caller_id)
+            if m_chats:
+                chat_id = sorted(list(m_chats))[0]
 
     rows = await sheets_invoices.list_all()
 

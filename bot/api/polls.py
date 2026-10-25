@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from ..sheets import orders as sheets_orders
 from ..sheets import repo
 from ..sheets.client import is_configured
-from .auth import require_admin
+from .auth import caller_chat_id, require_admin
 
 router = APIRouter(prefix="/polls", tags=["polls"])
 
@@ -57,13 +57,21 @@ async def list_polls(
                                      description="Inclusive YYYY-MM-DD lower bound on created_at."),
     date_to: Optional[str] = Query(None, alias="to",
                                    description="Inclusive YYYY-MM-DD upper bound on created_at."),
-    _: dict = Depends(require_admin),
+    chat_id: Optional[str] = Query(None, description="Scope polls to a specific chat group."),
+    auth: dict = Depends(require_admin),
 ) -> List[Dict[str, Any]]:
     """Polls in a date range, annotated with vote_count and chat_title."""
     if not is_configured():
         return []
 
+    if not chat_id:
+        chat_id = caller_chat_id(auth)
+
+    wanted = str(chat_id).strip() if chat_id else ""
+
     def in_range(row: Dict[str, Any]) -> bool:
+        if wanted and str(row.get("chat_id", "")).strip() != wanted:
+            return False
         date_prefix = str(row.get("created_at", ""))[:10]
         if not date_prefix:
             return False
