@@ -68,6 +68,16 @@ async def _chat_participants(chat_id: str) -> Set[str]:
             if uid:
                 participants.add(uid)
 
+    for inv in await sheets_invoices.list_all():
+        if str(inv.get("chat_id", "")).strip() == wanted:
+            payer = str(inv.get("payer_user_id") or "").strip()
+            if payer:
+                participants.add(payer)
+            for d in inv.get("details") or []:
+                duid = str(d.get("user_id", "")).strip()
+                if duid:
+                    participants.add(duid)
+
     return participants
 
 
@@ -138,6 +148,19 @@ async def list_members(
     auth_chat = caller_chat_id(auth)
     if not chat_id:
         chat_id = auth_chat
+    if not chat_id:
+        # Fall back to caller's registered chat_id from user table
+        caller_id = caller_user_id(auth)
+        if caller_id and is_configured():
+            u_row = await repo.find_by_pk("user", caller_id)
+            if u_row and str(u_row.get("chat_id", "")).strip():
+                chat_id = str(u_row.get("chat_id")).strip()
+        if not chat_id and caller_id:
+            # Fall back to the first chat the caller belongs to
+            m_chats = await user_chats(caller_id)
+            if m_chats:
+                chat_id = sorted(list(m_chats))[0]
+
     # Members may only request chats they belong to (the signed launch chat
     # always qualifies); otherwise fall back to their own chats below.
     if chat_id and not auth.get("is_admin"):
@@ -151,18 +174,17 @@ async def list_members(
     allowed: Set[str] = set()
     if chat_id:
         # Explicit chat (the Mini App launched from a group passes it via
-        # ?startapp=<chat_id>): union of users tagged with this chat_id and
-        # those derived from its votes/orders (legacy rows have blank chat_id).
+        # ?startapp=<chat_id> or ?chat_id=<chat_id>): union of users tagged with
+        # this chat_id and those derived from its votes/orders/invoices.
         wanted = str(chat_id).strip()
         allowed = {
             str(u.get("user_id", "")).strip()
             for u in users
             if str(u.get("chat_id", "")).strip() == wanted
         }
-        allowed |= await _chat_participants(chat_id)
+        allowed |= await _chat_participants(wanted)
     else:
-        # No explicit chat (e.g. opened from the bot DM) → members of every
-        # chat the caller belongs to, never other groups.
+        # No explicit chat → members of every chat the caller belongs to
         caller_id = caller_user_id(auth)
         for c in await user_chats(caller_id):
             allowed |= {
@@ -189,7 +211,11 @@ async def list_members(
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=ACTIVITY_WINDOW_DAYS)
 
+    # Invoices scoped to the target chat_id so debts from other groups do not leak
     all_invoices = await sheets_invoices.list_all()
+    if chat_id:
+        wanted = str(chat_id).strip()
+        all_invoices = [inv for inv in all_invoices if str(inv.get("chat_id", "")).strip() == wanted]
 
     # Pre-extract invoice detail items once into parsed list to avoid nested re-parsing
     parsed_invoice_details: List[Dict[str, Any]] = []
@@ -345,6 +371,12 @@ async def list_members(
     total_payers_waiting = sum(1 for m in out if m["payer_receivables"] > 0.009)
     total_receivables = sum(m["payer_receivables"] for m in out)
 
+    chat_title = ""
+    if chat_id and is_configured():
+        chat_row = await repo.find_by_pk("chat", str(chat_id).strip())
+        if chat_row:
+            chat_title = str(chat_row.get("title", "") or "").strip()
+
     stats_data = {
         "total": len(out),
         "admins": total_admins,
@@ -352,6 +384,8 @@ async def list_members(
         "total_debt": round(total_group_debt, 2),
         "total_receivables": round(total_receivables, 2),
         "total_payers_waiting": total_payers_waiting,
+        "chat_id": str(chat_id or "").strip(),
+        "chat_title": chat_title,
     }
 
     if page is not None:
@@ -366,6 +400,8 @@ async def list_members(
             "page": page,
             "page_size": page_size,
             "total_pages": total_pages,
+            "chat_id": str(chat_id or "").strip(),
+            "chat_title": chat_title,
             "stats": stats_data,
         }
 
@@ -421,15 +457,20 @@ class SettleBulkMembersRequest(BaseModel):
 @router.post("/{user_id}/settle")
 async def settle_member_debt(
     user_id: str,
+    chat_id: Optional[str] = Query(None, description="Scope settle to a specific chat group."),
     auth: dict = Depends(require_admin),
 ) -> Dict[str, Any]:
-    """Admin-only: Settle all unpaid lunch invoices for a specific member."""
+    """Admin-only: Settle all unpaid lunch invoices for a specific member in the scoped chat."""
+    wanted_chat = str(chat_id).strip() if chat_id else caller_chat_id(auth)
     user_row = await repo.find_by_pk("user", str(user_id)) if is_configured() else {}
     username = str((user_row.get("username", "") if user_row else "") or "")
     full_name = str((user_row.get("full_name", "") if user_row else "") or "")
     names = name_variants(username=username, full_name=full_name)
 
     all_invoices = await sheets_invoices.list_all()
+    if wanted_chat:
+        all_invoices = [inv for inv in all_invoices if str(inv.get("chat_id", "")).strip() == wanted_chat]
+
     settled_invoices_count = 0
     total_settled_amount = 0.0
 
@@ -454,6 +495,7 @@ async def settle_member_debt(
     return {
         "ok": True,
         "user_id": user_id,
+        "chat_id": wanted_chat,
         "settled_invoices_count": settled_invoices_count,
         "settled_amount": round(total_settled_amount, 2),
     }
@@ -462,9 +504,15 @@ async def settle_member_debt(
 @router.post("/settle-bulk")
 async def settle_bulk_members(
     body: SettleBulkMembersRequest,
+    chat_id: Optional[str] = Query(None, description="Scope bulk settle to a specific chat group."),
     auth: dict = Depends(require_admin),
 ) -> Dict[str, Any]:
-    """Admin-only: Settle all unpaid lunch invoices for multiple members in bulk."""
+    """Admin-only: Settle all unpaid lunch invoices for multiple members in bulk in the scoped chat."""
+    wanted_chat = str(chat_id).strip() if chat_id else caller_chat_id(auth)
+    all_invoices = await sheets_invoices.list_all()
+    if wanted_chat:
+        all_invoices = [inv for inv in all_invoices if str(inv.get("chat_id", "")).strip() == wanted_chat]
+
     total_settled_count = 0
     total_settled_amount = 0.0
 
@@ -474,7 +522,6 @@ async def settle_bulk_members(
         full_name = str((user_row.get("full_name", "") if user_row else "") or "")
         names = name_variants(username=username, full_name=full_name)
 
-        all_invoices = await sheets_invoices.list_all()
         for inv in all_invoices:
             inv_id = inv["invoice_id"]
             for d in inv.get("details") or []:
@@ -495,6 +542,7 @@ async def settle_bulk_members(
 
     return {
         "ok": True,
+        "chat_id": wanted_chat,
         "settled_users_count": len(body.user_ids),
         "settled_invoices_count": total_settled_count,
         "settled_amount": round(total_settled_amount, 2),
