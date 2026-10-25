@@ -68,16 +68,13 @@ async def match_member(sender_name: str, account_mask: str = "") -> Optional[Dic
         if user_toks and user_toks == sender_toks:
             return u
 
-    # Pass 3: Substring / loose token match
+    # Pass 3: Substring / token matching (require strong overlap to prevent false positive payments)
     for u in users:
         cand = f"{u.get('full_name', '')} {u.get('bank_name', '')} {u.get('username', '')}"
         cand_toks = _tokens(cand)
-        if len(sender_toks) >= 2 and (sender_toks.issubset(cand_toks) or cand_toks.issubset(sender_toks)):
-            return u
-        # Single token exact match if token length >= 4
-        if len(sender_toks) == 1:
-            tok = next(iter(sender_toks))
-            if len(tok) >= 4 and tok in cand_toks:
+        # Only match if both sender and candidate have at least 2 tokens and one is a subset of the other
+        if len(sender_toks) >= 2 and len(cand_toks) >= 2:
+            if sender_toks.issubset(cand_toks) or cand_toks.issubset(sender_toks):
                 return u
 
     return None

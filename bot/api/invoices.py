@@ -377,6 +377,14 @@ async def mark_invoice_person_paid(
 ) -> Dict[str, Any]:
     """Admin-only: Mark or unmark a specific person's lunch debt as PAID in an invoice."""
     names = name_variants(username=body.user_name or "", full_name=body.user_name or "")
+    if body.user_id and is_configured():
+        u_row = await repo.find_by_pk("user", str(body.user_id).strip())
+        if u_row:
+            names |= name_variants(
+                username=u_row.get("username") or "",
+                full_name=u_row.get("full_name") or "",
+            )
+
     success = await sheets_invoices.set_member_paid_status(
         invoice_id=invoice_id,
         user_id=body.user_id or "",
@@ -400,6 +408,14 @@ async def mark_invoices_bulk_paid(
 ) -> Dict[str, Any]:
     """Admin-only: Bulk mark or unmark a specific user across multiple invoices."""
     names = name_variants(username=body.user_name or "", full_name=body.user_name or "")
+    if body.user_id and is_configured():
+        u_row = await repo.find_by_pk("user", str(body.user_id).strip())
+        if u_row:
+            names |= name_variants(
+                username=u_row.get("username") or "",
+                full_name=u_row.get("full_name") or "",
+            )
+
     updated_count = 0
     for inv_id in body.invoice_ids:
         if await sheets_invoices.set_member_paid_status(

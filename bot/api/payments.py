@@ -3,7 +3,7 @@
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
@@ -27,10 +27,16 @@ class AssignPaymentBody(BaseModel):
 @router.get("")
 async def list_payments(
     user_id: Optional[str] = Query(None, description="Filter payments by user_id."),
+    status_filter: Optional[str] = Query(None, alias="status", description="Filter by status (MATCHED, UNMATCHED, etc.)."),
+    search: Optional[str] = Query(None, description="Search by sender name, trx_id, or username."),
+    page: Optional[int] = Query(None, ge=1, description="Page number for pagination."),
+    page_size: int = Query(20, ge=1, le=100, description="Items per page."),
     auth: dict = Depends(require_member),
-) -> List[Dict[str, Any]]:
-    """List payments (admins see all, members see their own)."""
+) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
+    """List payments (admins see all, members see their own) enriched with user profile and stats."""
     if not is_configured():
+        if page is not None:
+            return {"items": [], "total": 0, "page": page, "page_size": page_size, "total_pages": 0, "stats": {"total": 0, "matched": 0, "unmatched": 0, "total_usd": 0.0}}
         return []
 
     caller_id = caller_user_id(auth)
@@ -38,16 +44,83 @@ async def list_payments(
 
     all_payments = await sheets_payments.list_all()
     # Sort newest first
-    all_payments.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+    all_payments.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
 
+    users_map: Dict[str, Dict[str, Any]] = {}
+    if is_configured():
+        for u in await repo.list_all("user"):
+            uid = str(u.get("user_id") or "").strip()
+            if uid:
+                users_map[uid] = u
+
+    # Enrich payments with resolved member information
+    enriched: List[Dict[str, Any]] = []
+    for p in all_payments:
+        uid = str(p.get("user_id") or "").strip()
+        u_info = users_map.get(uid, {})
+        full_name = str(u_info.get("full_name") or "").strip()
+        username = str(u_info.get("username") or "").strip()
+        
+        enriched.append({
+            **p,
+            "user_name": full_name or username or p.get("sender_name") or "",
+            "username": username,
+            "bank_name": str(u_info.get("bank_name") or "").strip(),
+        })
+
+    # Scope permissions
     if not is_admin:
-        return [p for p in all_payments if p.get("user_id") == caller_id]
+        filtered = [p for p in enriched if p.get("user_id") == caller_id]
+    else:
+        filtered = enriched
 
     if user_id:
-        wanted = str(user_id).strip()
-        return [p for p in all_payments if p.get("user_id") == wanted]
+        wanted_u = str(user_id).strip()
+        filtered = [p for p in filtered if p.get("user_id") == wanted_u]
 
-    return all_payments
+    if status_filter and status_filter.strip() and status_filter.upper() != "ALL":
+        sf = status_filter.strip().upper()
+        filtered = [p for p in filtered if str(p.get("status", "")).upper() == sf]
+
+    if search and search.strip():
+        q = search.strip().lower()
+        filtered = [
+            p for p in filtered
+            if q in str(p.get("sender_name", "")).lower()
+            or q in str(p.get("trx_id", "")).lower()
+            or q in str(p.get("user_name", "")).lower()
+            or q in str(p.get("username", "")).lower()
+            or q in str(p.get("apv", "")).lower()
+        ]
+
+    total_count = len(filtered)
+    matched_count = sum(1 for p in filtered if str(p.get("status", "")).upper() == "MATCHED")
+    unmatched_count = sum(1 for p in filtered if str(p.get("status", "")).upper() == "UNMATCHED")
+    total_amount_usd = round(sum(float(p.get("amount_usd") or 0.0) for p in filtered), 2)
+
+    stats = {
+        "total": total_count,
+        "matched": matched_count,
+        "unmatched": unmatched_count,
+        "total_usd": total_amount_usd,
+    }
+
+    if page is not None:
+        import math
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        paged_items = filtered[start_idx:end_idx]
+        total_pages = math.ceil(total_count / page_size) if total_count > 0 else 1
+        return {
+            "items": paged_items,
+            "total": total_count,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages,
+            "stats": stats,
+        }
+
+    return filtered
 
 
 @router.post("/{payment_id}/assign")
