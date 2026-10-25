@@ -221,6 +221,8 @@ async def generate_and_send_invoice(
     custom_prices: Optional[Dict[str, float]] = None,
     currencies: Optional[List[str]] = None,
     sent_by: Optional[Union[int, str]] = None,
+    payer_user_id: Optional[str] = None,
+    payer_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Core function to calculate, send, and persist an order invoice.
@@ -291,10 +293,23 @@ async def generate_and_send_invoice(
     for key, dishes in grouped.items():
         user_orders.setdefault(display_names[key], []).extend(dishes.values())
 
-    # Determine payer information
-    payer_id = row.get("user_id")
+    existing_inv = await sheets_invoices.get(str(order_id))
+
+    # Determine payer information: explicit args > existing invoice > order clicker
+    payer_id = payer_user_id
+    payer_full_name = payer_name or ""
+
+    if not payer_id and existing_inv and existing_inv.get("payer_user_id"):
+        payer_id = existing_inv.get("payer_user_id")
+        if not payer_full_name:
+            payer_full_name = existing_inv.get("payer_name") or ""
+
+    if not payer_id:
+        payer_id = row.get("user_id")
+    if not payer_full_name:
+        payer_full_name = row.get("username") or "the Payer"
+
     khqr_text = ""
-    payer_full_name = row.get("username") or "the Payer"
     payer_row = None
     if payer_id:
         payer_row = await sheets_payers.get(str(payer_id))
@@ -302,7 +317,8 @@ async def generate_and_send_invoice(
             khqr_text = str(payer_row.get("khqr_text") or "")
             payer_full_name = str(payer_row.get("full_name") or payer_full_name)
 
-    payer_names = name_variants(
+    is_generic_name = (payer_full_name or "").strip().lower() in ("the payer", "payer", "admin", "unknown", "guest")
+    payer_names = set() if is_generic_name else name_variants(
         username=row.get("username") or "",
         full_name=payer_full_name,
     )
@@ -372,13 +388,26 @@ async def generate_and_send_invoice(
         paid_at = str(prev_record.get("paid_at") or "").strip()
         prev_paid_amt = float(prev_record.get("paid_amount") or 0.0)
 
-        # A record is only preserved as paid if it has a real payment transaction ID,
-        # an admin settlement reference, or a recorded paid timestamp.
-        if "paid" in prev_record and (payment_id or paid_at or prev_paid_amt > 0.0):
+        # Check if this member is the designated payer of THIS specific order
+        is_order_payer = False
+        if payer_id and u_id:
+            is_order_payer = (str(payer_id).strip() == str(u_id).strip())
+        elif payer_names and not is_generic_name:
+            is_order_payer = norm_name(u_name) in payer_names
+
+        if is_order_payer:
+            # The payer of this specific order fronted the money to the restaurant,
+            # so their own dish in THIS order is recorded as paid.
+            is_paid = True
+            paid_amt = subtotal
+            payment_id = "PAYER_SELF"
+            paid_at = repo.now_iso()
+        elif "paid" in prev_record and (payment_id or paid_at or prev_paid_amt > 0.0):
+            # A non-payer diner is only preserved as paid if backed by a payment transaction or admin settle
             is_paid = bool(prev_record.get("paid", False))
             paid_amt = prev_paid_amt if prev_paid_amt > 0.0 else (subtotal if is_paid else 0.0)
         else:
-            # Do not auto-mark diners or poll clickers as paid without recorded payment
+            # Do not auto-mark non-payer diners as paid without recorded payment
             is_paid = False
             paid_amt = 0.0
             payment_id = ""

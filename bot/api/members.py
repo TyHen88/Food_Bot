@@ -231,23 +231,37 @@ async def list_members(
             d_uname = str(d.get("user_name", "")).strip()
             subtotal = float(d.get("subtotal") or 0.0)
 
-            # Check if this entry belongs to the payer of this invoice
-            is_payer_self = is_same_person(d_uid, d_uname, p_uid, p_names)
-            raw_paid = bool(d.get("paid"))
-            payment_id = str(d.get("payment_id") or "").strip()
-            paid_at = str(d.get("paid_at") or "").strip()
-            paid_amt = float(d.get("paid_amount") or 0.0)
+            # Check if this entry belongs to the designated payer of THIS specific invoice
+            is_generic_payer = p_name.lower() in ("the payer", "payer", "admin", "unknown", "guest", "")
+            is_payer_self = False
+            if p_uid and d_uid:
+                is_payer_self = (p_uid == d_uid)
+            elif p_names and not is_generic_payer:
+                is_payer_self = norm_name(d_uname) in p_names
 
-            # Disregard auto-paid ghost flags where no payment record or admin settle exists
-            if raw_paid and not payment_id and not paid_at and paid_amt <= 0.0:
-                raw_paid = False
-                paid_amt = 0.0
-
-            if raw_paid and paid_amt <= 0.0:
+            if is_payer_self:
+                is_paid = True
                 paid_amt = subtotal
+                due = 0.0
+            else:
+                raw_paid = bool(d.get("paid"))
+                payment_id = str(d.get("payment_id") or "").strip()
+                paid_at = str(d.get("paid_at") or "").strip()
+                try:
+                    paid_amt = float(d.get("paid_amount") or 0.0)
+                except (TypeError, ValueError):
+                    paid_amt = 0.0
 
-            due = 0.0 if raw_paid else round(max(0.0, subtotal - paid_amt), 2)
-            is_paid = raw_paid or (due <= 0.009 and subtotal > 0)
+                # Disregard auto-paid ghost flags where no payment record or admin settle exists
+                if raw_paid and not payment_id and not paid_at and paid_amt <= 0.0:
+                    raw_paid = False
+                    paid_amt = 0.0
+
+                if raw_paid and paid_amt <= 0.0:
+                    paid_amt = subtotal
+
+                due = 0.0 if raw_paid else round(max(0.0, subtotal - paid_amt), 2)
+                is_paid = raw_paid or (due <= 0.009 and subtotal > 0)
 
             parsed_invoice_details.append({
                 "user_id": d_uid,

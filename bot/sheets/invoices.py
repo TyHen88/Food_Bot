@@ -236,3 +236,22 @@ async def set_member_paid_status(
         })
     return updated
 
+
+async def update_payer(
+    invoice_id: str,
+    payer_user_id: str,
+    payer_name: str,
+) -> bool:
+    """Update the designated payer on an existing invoice."""
+    if not is_configured():
+        return False
+    row = await repo.find_by_pk("invoice", str(invoice_id))
+    if not row:
+        return False
+    await repo.update("invoice", str(invoice_id), {
+        "payer_user_id": str(payer_user_id or "").strip(),
+        "payer_name": str(payer_name or "").strip(),
+    })
+    return True
+
+

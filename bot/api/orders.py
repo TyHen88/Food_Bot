@@ -582,6 +582,8 @@ class InvoiceBody(BaseModel):
     # one stored amount means the same thing regardless of how it was keyed.
     # Empty/unknown falls back to dollars (see exchange.normalize_currencies).
     currencies: List[str] = ["USD"]
+    payer_user_id: Optional[str] = None
+    payer_name: Optional[str] = None
 
 
 def _build_invoice_text(*args: Any, **kwargs: Any) -> str:
@@ -633,6 +635,8 @@ async def generate_order_invoice(
             custom_prices=custom_prices,
             currencies=currencies,
             sent_by=user_id,
+            payer_user_id=body.payer_user_id,
+            payer_name=body.payer_name,
         )
         return result
     except ValueError as e:
