@@ -115,3 +115,6 @@ dmypy.json
 
 #settings json
 .claude/settings.json
+
+# Nested frontend repository
+frontend/
