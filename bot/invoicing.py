@@ -394,6 +394,7 @@ async def generate_and_send_invoice(
         subtotal = round(sum(i["cost"] for i in dishes.values()), 2)
         payment_id = str(prev_record.get("payment_id") or "").strip()
         paid_at = str(prev_record.get("paid_at") or "").strip()
+        paid_note = str(prev_record.get("paid_note") or "").strip()
 
         # Check if this member is the designated payer of THIS specific order.
         # Name fallback is exact only (no first-name variants).
@@ -410,6 +411,7 @@ async def generate_and_send_invoice(
             paid_amt = subtotal
             payment_id = PAYER_SELF
             paid_at = repo.now_iso()
+            paid_note = ""
         elif payment_id and payment_id != PAYER_SELF:
             # A non-payer diner keeps only a real payment (PayWay trx or admin
             # settle). PAYER_SELF from a previous payer and old auto-paid flags
@@ -423,6 +425,7 @@ async def generate_and_send_invoice(
             paid_amt = 0.0
             payment_id = ""
             paid_at = ""
+            paid_note = ""
 
         details.append({
             "user_id": u_id,
@@ -433,6 +436,7 @@ async def generate_and_send_invoice(
             "paid_amount": paid_amt,
             "payment_id": payment_id,
             "paid_at": paid_at,
+            "paid_note": paid_note,
         })
 
     await sheets_invoices.save_sent(

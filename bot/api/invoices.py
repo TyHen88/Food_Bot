@@ -174,6 +174,7 @@ async def list_invoices(
                 "is_payer": d_is_payer,
                 "payment_id": "PAYER_SELF" if d_is_payer else (str(d.get("payment_id") or "") if is_p or p_amt > 0 else ""),
                 "paid_at": str(d.get("paid_at") or ""),
+                "paid_note": str(d.get("paid_note") or "") if is_p else "",
                 "items": d.get("items") or [],
             }
             parsed_details.append(d_enriched)
@@ -523,6 +524,7 @@ class MarkPaidBulkRequest(BaseModel):
     user_id: Optional[str] = ""
     user_name: Optional[str] = ""
     paid: bool = True
+    note: Optional[str] = ""
 
 
 async def _mark_target_names(user_id: Optional[str], user_name: Optional[str]) -> set:
@@ -579,6 +581,7 @@ async def mark_invoices_bulk_paid(
             user_names=names,
             is_paid=body.paid,
             payment_id=f"ADMIN_{caller_user_id(auth)}",
+            note=body.note or "",
         ):
             updated_count += 1
     return {"ok": True, "updated_count": updated_count, "paid": body.paid}

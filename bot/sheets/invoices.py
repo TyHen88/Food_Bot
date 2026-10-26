@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 # Written on the payer's own detail when an invoice is sent. It is NOT a
 # payment: it only counts while that person is still the invoice's payer.
 PAYER_SELF = "PAYER_SELF"
+MAX_PAID_NOTE = 200
 
 _GENERIC_PAYER_NAMES = {"the payer", "payer", "admin", "unknown", "guest", ""}
 
@@ -272,8 +273,10 @@ async def set_member_paid_status(
     is_paid: bool = True,
     payment_id: str = "MANUAL_ADMIN",
     paid_amount: Optional[float] = None,
+    note: str = "",
 ) -> bool:
-    """Explicitly mark or unmark a user's subtotal in an invoice as PAID or UNPAID."""
+    """Explicitly mark or unmark a user's subtotal in an invoice as PAID or UNPAID.
+    `note` (e.g. "cash, Mar 1-15") is kept on the detail as paid_note."""
     if not is_configured():
         return False
     row = await repo.find_by_pk("invoice", str(invoice_id))
@@ -292,10 +295,12 @@ async def set_member_paid_status(
                 d["paid_at"] = now
                 d["payment_id"] = payment_id
                 d["paid_amount"] = paid_amount if paid_amount is not None else subtotal
+                d["paid_note"] = str(note or "").strip()[:MAX_PAID_NOTE]
             else:
                 d["paid_at"] = ""
                 d["payment_id"] = ""
                 d["paid_amount"] = 0.0
+                d["paid_note"] = ""
             updated = True
 
     if updated:
