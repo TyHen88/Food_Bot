@@ -3,11 +3,14 @@
 """
 
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
+from zoneinfo import ZoneInfo
 
+from ..config import TIMEZONE
 from ..payway import PayWayTransaction
 from ..settlement import process_transaction_settlement
 from ..sheets import payments as sheets_payments
@@ -20,6 +23,19 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/payments", tags=["payments"])
 
 
+def _local_day(ts: Any) -> str:
+    """created_at is stored in UTC; bucket it by the group's local day so a
+    06:30 ICT payment isn't filed under yesterday."""
+    raw = str(ts or "").strip()
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return raw[:10]
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(ZoneInfo(TIMEZONE)).date().isoformat()
+
+
 class AssignPaymentBody(BaseModel):
     user_id: str
 
@@ -29,6 +45,8 @@ async def list_payments(
     user_id: Optional[str] = Query(None, description="Filter payments by user_id."),
     status_filter: Optional[str] = Query(None, alias="status", description="Filter by status (MATCHED, UNMATCHED, etc.)."),
     search: Optional[str] = Query(None, description="Search by sender name, trx_id, or username."),
+    date_from: Optional[str] = Query(None, alias="from", description="Inclusive YYYY-MM-DD lower bound on created_at."),
+    date_to: Optional[str] = Query(None, alias="to", description="Inclusive YYYY-MM-DD upper bound on created_at."),
     page: Optional[int] = Query(None, ge=1, description="Page number for pagination."),
     page_size: int = Query(20, ge=1, le=100, description="Items per page."),
     auth: dict = Depends(require_member),
@@ -81,6 +99,16 @@ async def list_payments(
     if status_filter and status_filter.strip() and status_filter.upper() != "ALL":
         sf = status_filter.strip().upper()
         filtered = [p for p in filtered if str(p.get("status", "")).upper() == sf]
+
+    if date_from or date_to:
+        def _in_range(p: Dict[str, Any]) -> bool:
+            day = _local_day(p.get("created_at"))
+            if date_from and day < date_from:
+                return False
+            if date_to and day > date_to:
+                return False
+            return True
+        filtered = [p for p in filtered if _in_range(p)]
 
     if search and search.strip():
         q = search.strip().lower()

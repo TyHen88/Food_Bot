@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, Query
 from ..people import exact_names, is_same_person
 from ..sheets import invoices as sheets_invoices
 from ..sheets import repo
-from ..sheets.invoices import detail_payment_state, is_detail_payer
+from ..sheets.invoices import _detail_matches, detail_payment_state, is_detail_payer
 from ..sheets.client import is_configured
 from .auth import caller_chat_id, caller_user_id, require_admin, require_member
 
@@ -460,9 +460,12 @@ class SettleBulkMembersRequest(BaseModel):
 async def settle_member_debt(
     user_id: str,
     chat_id: Optional[str] = Query(None, description="Scope settle to a specific chat group."),
+    date_from: Optional[str] = Query(None, alias="from", description="Inclusive YYYY-MM-DD lower bound on order_date."),
+    date_to: Optional[str] = Query(None, alias="to", description="Inclusive YYYY-MM-DD upper bound on order_date."),
     auth: dict = Depends(require_admin),
 ) -> Dict[str, Any]:
-    """Admin-only: Settle all unpaid lunch invoices for a specific member in the scoped chat."""
+    """Admin-only: Settle a member's unpaid lunch invoices in the scoped chat,
+    optionally only those whose order_date falls in [from, to]."""
     wanted_chat = str(chat_id).strip() if chat_id else caller_chat_id(auth)
     user_row = await repo.find_by_pk("user", str(user_id)) if is_configured() else {}
     username = str((user_row.get("username", "") if user_row else "") or "")
@@ -475,29 +478,51 @@ async def settle_member_debt(
 
     settled_invoices_count = 0
     total_settled_amount = 0.0
+    settled_invoice_ids: List[str] = []
 
     for inv in all_invoices:
+        # Date part only, as the invoice list filters, so bounds stay inclusive.
+        order_date = str(inv.get("order_date") or "")[:10]
+        if date_from and order_date < date_from:
+            continue
+        if date_to and order_date > date_to:
+            continue
         inv_id = inv["invoice_id"]
+        # Sum every unpaid detail first: set_member_paid_status marks all of
+        # this member's details on the invoice in one write.
+        due_here = 0.0
+        has_unpaid = False
         for d in inv.get("details") or []:
-            if is_same_person(d.get("user_id"), d.get("user_name"), str(user_id), names):
-                is_paid, _, due = detail_payment_state(d, is_payer=is_detail_payer(inv, d))
-                if not is_paid:
-                    await sheets_invoices.set_member_paid_status(
-                        invoice_id=inv_id,
-                        user_id=str(user_id),
-                        user_names=names,
-                        is_paid=True,
-                        payment_id=f"ADMIN_{caller_user_id(auth)}",
-                    )
-                    settled_invoices_count += 1
-                    total_settled_amount += due
+            # Same strict matcher the write uses, so we never count a row it
+            # won't actually mark (e.g. a namesake's).
+            if not _detail_matches(d, str(user_id), names):
+                continue
+            is_paid, _, due = detail_payment_state(d, is_payer=is_detail_payer(inv, d))
+            if not is_paid:
+                has_unpaid = True
+                due_here += due
+        if not has_unpaid:
+            continue
+        if await sheets_invoices.set_member_paid_status(
+            invoice_id=inv_id,
+            user_id=str(user_id),
+            user_names=names,
+            is_paid=True,
+            payment_id=f"ADMIN_{caller_user_id(auth)}",
+        ):
+            settled_invoices_count += 1
+            total_settled_amount += due_here
+            settled_invoice_ids.append(inv_id)
 
     return {
         "ok": True,
         "user_id": user_id,
         "chat_id": wanted_chat,
+        "from": date_from or "",
+        "to": date_to or "",
         "settled_invoices_count": settled_invoices_count,
         "settled_amount": round(total_settled_amount, 2),
+        "settled_invoice_ids": settled_invoice_ids,
     }
 
 
@@ -525,7 +550,7 @@ async def settle_bulk_members(
         for inv in all_invoices:
             inv_id = inv["invoice_id"]
             for d in inv.get("details") or []:
-                if is_same_person(d.get("user_id"), d.get("user_name"), str(uid), names):
+                if _detail_matches(d, str(uid), names):
                     is_paid, _, due = detail_payment_state(d, is_payer=is_detail_payer(inv, d))
                     if not is_paid:
                         await sheets_invoices.set_member_paid_status(
