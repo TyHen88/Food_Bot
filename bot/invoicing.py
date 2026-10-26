@@ -19,12 +19,13 @@ from typing import Any, Dict, List, Optional, Set, Union
 from telegram import Bot
 
 from . import exchange
-from .people import is_same_person, name_variants, norm_name, strip_invisible
+from .people import name_variants, norm_name, strip_invisible
 from .sheets import events as sheets_events
 from .sheets import invoices as sheets_invoices
 from .sheets import orders as sheets_orders
 from .sheets import payers as sheets_payers
-from .sheets import settings as sheets_settings
+from .sheets import repo
+from .sheets.invoices import PAYER_SELF, detail_payment_state
 
 logger = logging.getLogger(__name__)
 
@@ -177,7 +178,11 @@ def build_invoice_text(
         grand_total += user_total
 
         u_id = next((str(i.get("user_id") or "").strip() for i in user_items if i.get("user_id")), "")
-        is_payer = is_same_person(u_id, user_name, payer_user_id, payer_variants)
+        if u_id and payer_user_id:
+            is_payer = u_id == str(payer_user_id).strip()
+        else:
+            # Exact name only — first-name variants mislabel a namesake as Payer
+            is_payer = bool(payer_variants) and norm_name(user_name) == norm_name(payer_name)
         if is_payer:
             payer_subtotal += user_total
 
@@ -318,8 +323,11 @@ async def generate_and_send_invoice(
             payer_full_name = str(payer_row.get("full_name") or payer_full_name)
 
     is_generic_name = (payer_full_name or "").strip().lower() in ("the payer", "payer", "admin", "unknown", "guest")
+    # The order row's username belongs to whoever pressed Order — only a
+    # payer name when that person IS the payer.
+    clicker_is_payer = str(payer_id or "").strip() == str(row.get("user_id") or "").strip()
     payer_names = set() if is_generic_name else name_variants(
-        username=row.get("username") or "",
+        username=(row.get("username") or "") if clicker_is_payer else "",
         full_name=payer_full_name,
     )
 
@@ -386,26 +394,29 @@ async def generate_and_send_invoice(
         subtotal = round(sum(i["cost"] for i in dishes.values()), 2)
         payment_id = str(prev_record.get("payment_id") or "").strip()
         paid_at = str(prev_record.get("paid_at") or "").strip()
-        prev_paid_amt = float(prev_record.get("paid_amount") or 0.0)
 
-        # Check if this member is the designated payer of THIS specific order
+        # Check if this member is the designated payer of THIS specific order.
+        # Name fallback is exact only (no first-name variants).
         is_order_payer = False
         if payer_id and u_id:
             is_order_payer = (str(payer_id).strip() == str(u_id).strip())
-        elif payer_names and not is_generic_name:
-            is_order_payer = norm_name(u_name) in payer_names
+        elif not is_generic_name:
+            is_order_payer = norm_name(u_name) == norm_name(payer_full_name)
 
         if is_order_payer:
             # The payer of this specific order fronted the money to the restaurant,
             # so their own dish in THIS order is recorded as paid.
             is_paid = True
             paid_amt = subtotal
-            payment_id = "PAYER_SELF"
+            payment_id = PAYER_SELF
             paid_at = repo.now_iso()
-        elif "paid" in prev_record and (payment_id or paid_at or prev_paid_amt > 0.0):
-            # A non-payer diner is only preserved as paid if backed by a payment transaction or admin settle
-            is_paid = bool(prev_record.get("paid", False))
-            paid_amt = prev_paid_amt if prev_paid_amt > 0.0 else (subtotal if is_paid else 0.0)
+        elif payment_id and payment_id != PAYER_SELF:
+            # A non-payer diner keeps only a real payment (PayWay trx or admin
+            # settle). PAYER_SELF from a previous payer and old auto-paid flags
+            # without a payment_id are dropped.
+            prev_paid, prev_paid_amt, _ = detail_payment_state(prev_record)
+            is_paid = prev_paid and prev_paid_amt >= subtotal - 0.009
+            paid_amt = prev_paid_amt
         else:
             # Do not auto-mark non-payer diners as paid without recorded payment
             is_paid = False

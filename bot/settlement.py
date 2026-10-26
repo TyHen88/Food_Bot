@@ -5,12 +5,14 @@ Matches incoming bank transactions to group members and settles single
 or multi-date lunch debts using FIFO (First-In, First-Out).
 """
 
+import json
 import logging
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set
 
-from .people import is_same_person, name_variants, norm_name, strip_invisible
+from .people import exact_names, is_same_person, name_variants, norm_name
 from .payway import PayWayTransaction
 from .sheets import invoices as sheets_invoices
+from .sheets.invoices import detail_payment_state, is_detail_payer
 from .sheets import payments as sheets_payments
 from .sheets import repo
 from .sheets.client import is_configured
@@ -75,9 +77,19 @@ async def match_member(sender_name: str, account_mask: str = "") -> Optional[Dic
         # Only match if both sender and candidate have at least 2 tokens and one is a subset of the other
         if len(sender_toks) >= 2 and len(cand_toks) >= 2:
             if sender_toks.issubset(cand_toks) or cand_toks.issubset(sender_toks):
-                return u
+                # Flagged so the caller never learns this sender as a bank
+                # alias: a wrong guess would then route every future
+                # transfer from this sender to the wrong member as "paid".
+                return {**u, "_fuzzy_match": True}
 
     return None
+
+
+def _settle_names(user: Dict[str, Any]) -> Set[str]:
+    """Names that may claim an id-less invoice entry for `user`: exact
+    full name, username and bank aliases — never a bare first name, or a
+    transfer from "Tii ♏️" would settle a guest "Tii" too."""
+    return exact_names(user.get("username"), user.get("full_name"), user.get("bank_name"))
 
 
 async def get_unpaid_invoices_for_user(user: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -93,19 +105,13 @@ async def get_unpaid_invoices_for_user(user: Dict[str, Any]) -> List[Dict[str, A
         "detail": dict,
       }
     """
-    if not is_configured():
+    uid = str(user.get("user_id") or "").strip()
+    if not is_configured() or not uid:
+        # Without an id, is_same_person would fall back to names across
+        # every invoice and settle other people's dishes.
         return []
 
-    uid = str(user.get("user_id") or "")
-    names = name_variants(
-        username=user.get("username") or "",
-        full_name=user.get("full_name") or "",
-    )
-    raw_bank = str(user.get("bank_name") or "")
-    if raw_bank:
-        for a in raw_bank.replace(",", "|").split("|"):
-            if a.strip():
-                names.add(norm_name(a.strip()))
+    names = _settle_names(user)
 
     all_invoices = await sheets_invoices.list_all()
     # Sort chronologically (oldest order_date first)
@@ -123,20 +129,7 @@ async def get_unpaid_invoices_for_user(user: Dict[str, Any]) -> List[Dict[str, A
         for d in details:
             if is_same_person(d.get("user_id"), d.get("user_name"), uid, names):
                 subtotal = float(d.get("subtotal") or 0.0)
-                raw_paid = bool(d.get("paid"))
-                payment_id = str(d.get("payment_id") or "").strip()
-                paid_at = str(d.get("paid_at") or "").strip()
-                paid_amount = float(d.get("paid_amount") or 0.0)
-
-                # Ignore ghost auto-paid flag without recorded transaction or admin settle
-                if raw_paid and not payment_id and not paid_at and paid_amount <= 0.0:
-                    raw_paid = False
-                    paid_amount = 0.0
-
-                if raw_paid and paid_amount <= 0.0:
-                    paid_amount = subtotal
-
-                due = round(max(0.0, subtotal - (subtotal if raw_paid else paid_amount)), 2)
+                _, paid_amount, due = detail_payment_state(d, is_payer=is_detail_payer(inv, d))
                 if due > 0.009:  # More than 1 cent due
                     unpaid.append({
                         "invoice_id": inv["invoice_id"],
@@ -224,6 +217,10 @@ async def process_transaction_settlement(
 
     # 2. Member matching
     matched_user = assigned_user or await match_member(tx.sender_name, tx.account_mask)
+    if matched_user and not str(matched_user.get("user_id") or "").strip():
+        # A user row without an id can't be settled safely (see
+        # get_unpaid_invoices_for_user) — leave it for admin assignment.
+        matched_user = None
 
     if not matched_user:
         logger.warning(f"Unmatched PayWay transaction: {tx.sender_name} - ${tx.amount_usd}")
@@ -248,15 +245,7 @@ async def process_transaction_settlement(
 
     # 3. User matched -> FIFO settlement across unpaid invoices
     uid = str(matched_user.get("user_id") or "")
-    names = name_variants(
-        username=matched_user.get("username") or "",
-        full_name=matched_user.get("full_name") or "",
-    )
-    raw_bank = str(matched_user.get("bank_name") or "")
-    if raw_bank:
-        for a in raw_bank.replace(",", "|").split("|"):
-            if a.strip():
-                names.add(norm_name(a.strip()))
+    names = _settle_names(matched_user)
 
     unpaid_orders = await get_unpaid_invoices_for_user(matched_user)
     remaining_funds = tx.amount_usd
@@ -292,8 +281,9 @@ async def process_transaction_settlement(
         })
         remaining_funds = max(0.0, remaining_funds - pay_amount)
 
-    # Auto-learn / update bank_name alias if sender_name is new
-    if tx.sender_name and is_configured():
+    # Auto-learn / update bank_name alias if sender_name is new (exact or
+    # admin-assigned matches only — never from a fuzzy token-overlap guess)
+    if tx.sender_name and is_configured() and not matched_user.get("_fuzzy_match"):
         current_bank = str(matched_user.get("bank_name") or "").strip()
         if not current_bank:
             await repo.update("user", uid, {"bank_name": tx.sender_name})

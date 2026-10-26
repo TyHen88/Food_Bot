@@ -9,14 +9,15 @@ re-sending to the Telegram group is admin-only.
 
 import logging
 import math
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 from pydantic import BaseModel
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from .. import exchange
-from ..people import is_same_person, name_variants
+from ..people import exact_names, is_same_person, name_variants
 from ..sheets import invoices as sheets_invoices
+from ..sheets.invoices import detail_payment_state, is_detail_payer
 from ..sheets import payers as sheets_payers
 from ..sheets import repo
 from ..sheets.client import is_configured
@@ -40,42 +41,10 @@ async def _allowed_chats(auth: dict) -> Optional[set]:
     return chats
 
 
-def _parse_detail_payment(d: Dict[str, Any]) -> Tuple[bool, float, float]:
-    """Parse payment state from detail record; guards against ghost auto-paid flags."""
-    try:
-        subtotal = float(d.get("subtotal") or 0.0)
-    except (TypeError, ValueError):
-        subtotal = 0.0
-
-    if is_payer:
-        return True, subtotal, 0.0
-
-    raw_paid = bool(d.get("paid"))
-    payment_id = str(d.get("payment_id") or "").strip()
-    paid_at = str(d.get("paid_at") or "").strip()
-    try:
-        paid_amt = float(d.get("paid_amount") or 0.0)
-    except (TypeError, ValueError):
-        paid_amt = 0.0
-
-    # Disregard auto-paid ghost flags where no payment record or admin settle exists
-    if raw_paid and not payment_id and not paid_at and paid_amt <= 0.0:
-        raw_paid = False
-        paid_amt = 0.0
-
-    if raw_paid and paid_amt <= 0.0:
-        paid_amt = subtotal
-
-    due = max(0.0, round(subtotal - (subtotal if raw_paid else paid_amt), 2))
-    is_paid = raw_paid or (due <= 0.009 and subtotal > 0)
-    return is_paid, paid_amt, due
-
-
 def _my_share(
-    details: List[Dict[str, Any]], 
-    caller_id: str, 
-    caller_names: set, 
-    is_payer: bool = False
+    inv: Dict[str, Any],
+    caller_id: str,
+    caller_names: set,
 ) -> Tuple[float, bool, float]:
     """(amount, paid, due) for the caller: the sum of their subtotals,
     whether they have fully paid, and what is still owed after partial payments."""
@@ -83,11 +52,11 @@ def _my_share(
     due = 0.0
     paid = True
     found = False
-    for d in details or []:
+    for d in inv.get("details") or []:
         if not is_same_person(d.get("user_id"), d.get("user_name"), caller_id, caller_names):
             continue
         found = True
-        is_p, p_amt, d_due = _parse_detail_payment(d, is_payer=is_payer)
+        is_p, p_amt, d_due = detail_payment_state(d, is_payer=is_detail_payer(inv, d))
         total += float(d.get("subtotal") or 0.0)
         due += d_due
         if not is_p:
@@ -142,7 +111,11 @@ async def list_invoices(
     target_names = await caller_names(auth)
     if user_id and str(user_id).strip():
         req_uid = str(user_id).strip()
-        if auth.get("is_admin") and req_uid != caller_id:
+        # Members may target another member too (View Spend): rows are already
+        # scoped to the caller's chats and every detail is visible in them, so
+        # this exposes nothing new — but ignoring it made the member's spend
+        # modal show the VIEWER's payer/paid status instead of the member's.
+        if req_uid != caller_id:
             target_id = req_uid
             target_names = set()
             if is_configured():
@@ -166,20 +139,16 @@ async def list_invoices(
         if date_to and order_date > date_to:
             continue
 
-        payer_id = str(r.get("payer_user_id") or "").strip()
-        payer_uname = str(r.get("payer_name") or "").strip()
-        is_generic_name = payer_uname.lower() in ("the payer", "payer", "admin", "unknown", "guest", "")
-        payer_var = set() if is_generic_name else name_variants(username=payer_uname, full_name=payer_uname)
-
-        # Is the targeted user the designated payer of THIS invoice?
-        is_current_payer = False
-        if payer_id and target_id:
-            is_current_payer = (payer_id == target_id)
-        elif payer_var and not is_generic_name:
-            is_current_payer = bool(target_names.intersection(payer_var))
-
         details = r.get("details") or []
-        my_amount, my_paid, my_due = _my_share(details, target_id, target_names, is_payer=is_current_payer)
+
+        # Is the targeted user the designated payer of THIS invoice? By id, or
+        # (legacy name-only payer) because one of their own details is the payer.
+        payer_id = str(r.get("payer_user_id") or "").strip()
+        is_current_payer = bool(payer_id and target_id and payer_id == target_id) or any(
+            is_detail_payer(r, d) for d in details
+            if is_same_person(d.get("user_id"), d.get("user_name"), target_id, target_names)
+        )
+        my_amount, my_paid, my_due = _my_share(r, target_id, target_names)
         rate = float(r.get("usd_khr_rate") or 0)
         effective_rate = rate if rate > 0 else system_rate
         paid_members: List[Dict[str, Any]] = []
@@ -191,14 +160,9 @@ async def list_invoices(
             d_uname = str(d.get("user_name") or "").strip()
             sub = float(d.get("subtotal") or 0.0)
 
-            # Check if this specific member is the payer of THIS invoice
-            is_detail_payer = False
-            if payer_id and d_uid:
-                is_detail_payer = (payer_id == d_uid)
-            elif payer_var and not is_generic_name:
-                is_detail_payer = norm_name(d_uname) in payer_var
-
-            is_p, p_amt, due = _parse_detail_payment(d, is_payer=is_detail_payer)
+            # Only the payer of THIS invoice is automatically paid for their own dish
+            d_is_payer = is_detail_payer(r, d)
+            is_p, p_amt, due = detail_payment_state(d, is_payer=d_is_payer)
 
             d_enriched = {
                 "user_id": d_uid,
@@ -207,8 +171,8 @@ async def list_invoices(
                 "paid": is_p,
                 "paid_amount": p_amt,
                 "due": due,
-                "is_payer": is_detail_payer,
-                "payment_id": "PAYER_SELF" if is_detail_payer else str(d.get("payment_id") or ""),
+                "is_payer": d_is_payer,
+                "payment_id": "PAYER_SELF" if d_is_payer else (str(d.get("payment_id") or "") if is_p or p_amt > 0 else ""),
                 "paid_at": str(d.get("paid_at") or ""),
                 "items": d.get("items") or [],
             }
@@ -221,8 +185,8 @@ async def list_invoices(
                     "amount": p_amt if p_amt > 0 else sub,
                     "amount_khr": exchange.to_khr(p_amt if p_amt > 0 else sub, effective_rate),
                     "paid_at": str(d.get("paid_at") or ""),
-                    "payment_id": "PAYER_SELF" if is_detail_payer else str(d.get("payment_id") or ""),
-                    "is_payer": is_detail_payer,
+                    "payment_id": "PAYER_SELF" if d_is_payer else str(d.get("payment_id") or ""),
+                    "is_payer": d_is_payer,
                     "items": d.get("items") or [],
                 })
             else:
@@ -357,11 +321,6 @@ async def get_day_summary(
         inv_total = float(inv.get("total") or 0.0)
         total_spend += inv_total
 
-        payer_id = str(inv.get("payer_user_id") or "").strip()
-        payer_uname = str(inv.get("payer_name") or "").strip()
-        is_generic_name = payer_uname.lower() in ("the payer", "payer", "admin", "unknown", "guest", "")
-        payer_var = set() if is_generic_name else name_variants(username=payer_uname, full_name=payer_uname)
-
         orders_info.append({
             "invoice_id": inv_id,
             "order_id": inv_id,
@@ -380,13 +339,8 @@ async def get_day_summary(
             sub = float(d.get("subtotal") or 0.0)
 
             # Only the payer of this specific invoice is automatically paid for their own dish
-            is_detail_payer = False
-            if payer_id and d_uid:
-                is_detail_payer = (payer_id == d_uid)
-            elif payer_var and not is_generic_name:
-                is_detail_payer = norm_name(d_uname) in payer_var
-
-            is_p, p_amt, due = _parse_detail_payment(d, is_payer=is_detail_payer)
+            d_is_payer = is_detail_payer(inv, d)
+            is_p, p_amt, due = detail_payment_state(d, is_payer=d_is_payer)
 
             member_key = d_uid or d_uname
             if is_p:
@@ -394,7 +348,7 @@ async def get_day_summary(
                 if member_key in paid_members_map:
                     paid_members_map[member_key]["amount"] += (p_amt if p_amt > 0 else sub)
                     paid_members_map[member_key]["items"].extend(d.get("items") or [])
-                    if is_detail_payer:
+                    if d_is_payer:
                         paid_members_map[member_key]["is_payer"] = True
                 else:
                     paid_members_map[member_key] = {
@@ -403,8 +357,8 @@ async def get_day_summary(
                         "amount": p_amt if p_amt > 0 else sub,
                         "amount_khr": exchange.to_khr(p_amt if p_amt > 0 else sub, rate),
                         "paid_at": str(d.get("paid_at") or ""),
-                        "payment_id": "PAYER_SELF" if is_detail_payer else str(d.get("payment_id") or ""),
-                        "is_payer": is_detail_payer,
+                        "payment_id": "PAYER_SELF" if d_is_payer else str(d.get("payment_id") or ""),
+                        "is_payer": d_is_payer,
                         "items": list(d.get("items") or []),
                     }
             else:
@@ -465,7 +419,14 @@ async def get_invoice(
     data URI + raw KHQR payload) so the viewer can pay. Any member of the chat."""
     inv = await _get_visible_invoice(invoice_id, auth)
     titles = await _chat_titles()
-    out = {**inv, "chat_title": titles.get(inv["chat_id"], "")}
+    # Server-computed paid state per detail, same rule as the list — the raw
+    # stored flag can be an old auto-paid or stale PAYER_SELF value.
+    details = []
+    for d in inv["details"]:
+        d_is_payer = is_detail_payer(inv, d)
+        is_p, p_amt, due = detail_payment_state(d, is_payer=d_is_payer)
+        details.append({**d, "paid": is_p, "paid_amount": p_amt, "due": due, "is_payer": d_is_payer})
+    out = {**inv, "details": details, "chat_title": titles.get(inv["chat_id"], "")}
 
     if inv["payer_user_id"]:
         payer = await sheets_payers.get(inv["payer_user_id"])
@@ -564,6 +525,19 @@ class MarkPaidBulkRequest(BaseModel):
     paid: bool = True
 
 
+async def _mark_target_names(user_id: Optional[str], user_name: Optional[str]) -> set:
+    """Names that identify the person being marked, for id-less invoice
+    entries only (ids are matched exactly in sheets_invoices). Exact names
+    only — first-name variants let marking "Tii ♏️" settle a guest "Tii"."""
+    uid = str(user_id or "").strip()
+    names = exact_names(user_name)
+    if uid and is_configured():
+        u_row = await repo.find_by_pk("user", uid)
+        if u_row:
+            names |= exact_names(u_row.get("username"), u_row.get("full_name"))
+    return names
+
+
 @router.post("/{invoice_id}/mark-paid")
 async def mark_invoice_person_paid(
     invoice_id: str,
@@ -571,14 +545,7 @@ async def mark_invoice_person_paid(
     auth: dict = Depends(require_admin),
 ) -> Dict[str, Any]:
     """Admin-only: Mark or unmark a specific person's lunch debt as PAID in an invoice."""
-    names = name_variants(username=body.user_name or "", full_name=body.user_name or "")
-    if body.user_id and is_configured():
-        u_row = await repo.find_by_pk("user", str(body.user_id).strip())
-        if u_row:
-            names |= name_variants(
-                username=u_row.get("username") or "",
-                full_name=u_row.get("full_name") or "",
-            )
+    names = await _mark_target_names(body.user_id, body.user_name)
 
     success = await sheets_invoices.set_member_paid_status(
         invoice_id=invoice_id,
@@ -602,14 +569,7 @@ async def mark_invoices_bulk_paid(
     auth: dict = Depends(require_admin),
 ) -> Dict[str, Any]:
     """Admin-only: Bulk mark or unmark a specific user across multiple invoices."""
-    names = name_variants(username=body.user_name or "", full_name=body.user_name or "")
-    if body.user_id and is_configured():
-        u_row = await repo.find_by_pk("user", str(body.user_id).strip())
-        if u_row:
-            names |= name_variants(
-                username=u_row.get("username") or "",
-                full_name=u_row.get("full_name") or "",
-            )
+    names = await _mark_target_names(body.user_id, body.user_name)
 
     updated_count = 0
     for inv_id in body.invoice_ids:

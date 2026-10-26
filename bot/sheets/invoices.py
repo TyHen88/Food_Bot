@@ -13,12 +13,79 @@ bumps `sent_count`. `details` stores the per-person breakdown as JSON:
 
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
+from ..people import norm_name
 from . import repo
 from .client import is_configured
 
 logger = logging.getLogger(__name__)
+
+# Written on the payer's own detail when an invoice is sent. It is NOT a
+# payment: it only counts while that person is still the invoice's payer.
+PAYER_SELF = "PAYER_SELF"
+
+_GENERIC_PAYER_NAMES = {"the payer", "payer", "admin", "unknown", "guest", ""}
+
+
+def _to_float(v: Any) -> float:
+    try:
+        return float(v or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def is_detail_payer(inv: Dict[str, Any], d: Dict[str, Any]) -> bool:
+    """Is invoice detail `d` the designated payer of THIS invoice?
+
+    Ids decide when both sides have one. Otherwise the detail's name must
+    equal the payer's name exactly — never the first-name variant from
+    `name_variants`, which made "Tii" the payer of "Tii ♏️"'s invoices.
+    """
+    payer_id = str(inv.get("payer_user_id") or "").strip()
+    d_uid = str(d.get("user_id") or "").strip()
+    if payer_id and d_uid:
+        return payer_id == d_uid
+    payer_name = norm_name(inv.get("payer_name"))
+    if payer_name in _GENERIC_PAYER_NAMES:
+        return False
+    return norm_name(d.get("user_name")) == payer_name
+
+
+def detail_payment_state(d: Dict[str, Any], is_payer: bool = False) -> Tuple[bool, float, float]:
+    """(is_paid, paid_amount, due) for one invoice detail — the single rule
+    every menu (invoices, day summary, members, settlement) must use.
+
+    A paid flag only counts when it is backed by a real payment_id (PayWay
+    trx id or ADMIN_<id> manual settle). Flags without one were written by
+    the old auto-paid code, and PAYER_SELF only holds while `is_payer`.
+    """
+    subtotal = _to_float(d.get("subtotal"))
+    if is_payer:
+        return True, subtotal, 0.0
+
+    payment_id = str(d.get("payment_id") or "").strip()
+    if not payment_id or payment_id == PAYER_SELF:
+        return False, 0.0, round(subtotal, 2)
+
+    paid_amt = _to_float(d.get("paid_amount"))
+    if bool(d.get("paid")):
+        return True, (paid_amt if paid_amt > 0 else subtotal), 0.0
+
+    due = round(max(0.0, subtotal - paid_amt), 2)
+    return (due <= 0.009 and subtotal > 0), paid_amt, due
+
+
+def _detail_matches(d: Dict[str, Any], user_id: str, user_names: Set[str]) -> bool:
+    """Write-path matcher, stricter than people.is_same_person: with a
+    user_id, entries that carry an id must match it exactly; without one,
+    only id-less (guest/legacy) entries can match, so marking a guest
+    "Tii" paid can never touch member "Tii ♏️"."""
+    euid = str(d.get("user_id") or "").strip()
+    target = str(user_id or "").strip()
+    if euid:
+        return bool(target) and euid == target
+    return bool(user_names) and norm_name(d.get("user_name")) in user_names
 
 
 def _parse_details(raw: Any) -> List[Dict[str, Any]]:
@@ -171,15 +238,17 @@ async def mark_member_paid(
     if not row:
         return False
 
-    from ..people import is_same_person
     details = _parse_details(row.get("details"))
     updated = False
     now = repo.now_iso()
 
     for d in details:
-        if is_same_person(d.get("user_id"), d.get("user_name"), user_id, user_names):
+        if _detail_matches(d, user_id, user_names):
             subtotal = float(d.get("subtotal") or 0.0)
-            prev_paid = float(d.get("paid_amount") or 0.0) if not d.get("paid") else 0.0
+            # Only carry over an earlier partial payment that was a real one.
+            _, prev_paid, _ = detail_payment_state(d)
+            if d.get("paid"):
+                prev_paid = 0.0
             new_paid_total = round(prev_paid + paid_amount, 2) if paid_amount else subtotal
 
             d["paid"] = bool(is_fully_paid or (new_paid_total >= (subtotal - 0.05)))
@@ -211,13 +280,12 @@ async def set_member_paid_status(
     if not row:
         return False
 
-    from ..people import is_same_person
     details = _parse_details(row.get("details"))
     updated = False
     now = repo.now_iso()
 
     for d in details:
-        if is_same_person(d.get("user_id"), d.get("user_name"), user_id, user_names):
+        if _detail_matches(d, user_id, user_names):
             subtotal = float(d.get("subtotal") or 0.0)
             d["paid"] = is_paid
             if is_paid:

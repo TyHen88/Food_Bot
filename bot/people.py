@@ -68,6 +68,19 @@ def name_variants(
     return {norm_name(c) for c in candidates if norm_name(c)}
 
 
+def exact_names(*values: Any) -> Set[str]:
+    """Normalized full names / usernames exactly as given — no first-name
+    variant. Use for anything that decides money (debt, paid, settle): with
+    `name_variants`, "Tii ♏️" also claimed every id-less entry named "Tii"."""
+    out = set()
+    for v in values:
+        for alias in str(v or "").replace(",", "|").split("|"):
+            key = norm_name(alias)
+            if key:
+                out.add(key)
+    return out
+
+
 def is_same_person(entry_uid: Any, entry_name: Any, uid: Any, names: Set[str]) -> bool:
     """Does an order-item / invoice-detail entry belong to `uid` or `names`?
 

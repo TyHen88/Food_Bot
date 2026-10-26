@@ -15,9 +15,10 @@ from typing import Any, Dict, List, Optional, Set, Union
 
 from fastapi import APIRouter, Depends, Query
 
-from ..people import is_same_person, name_variants
+from ..people import exact_names, is_same_person
 from ..sheets import invoices as sheets_invoices
 from ..sheets import repo
+from ..sheets.invoices import detail_payment_state, is_detail_payer
 from ..sheets.client import is_configured
 from .auth import caller_chat_id, caller_user_id, require_admin, require_member
 
@@ -222,7 +223,6 @@ async def list_members(
     for inv in all_invoices:
         p_uid = str(inv.get("payer_user_id") or "").strip()
         p_name = str(inv.get("payer_name") or "").strip()
-        p_names = name_variants(username=p_name, full_name=p_name)
         inv_id = str(inv.get("invoice_id") or inv.get("order_id") or "")
         ord_date = str(inv.get("order_date") or "")
 
@@ -231,37 +231,11 @@ async def list_members(
             d_uname = str(d.get("user_name", "")).strip()
             subtotal = float(d.get("subtotal") or 0.0)
 
-            # Check if this entry belongs to the designated payer of THIS specific invoice
-            is_generic_payer = p_name.lower() in ("the payer", "payer", "admin", "unknown", "guest", "")
-            is_payer_self = False
-            if p_uid and d_uid:
-                is_payer_self = (p_uid == d_uid)
-            elif p_names and not is_generic_payer:
-                is_payer_self = norm_name(d_uname) in p_names
-
-            if is_payer_self:
-                is_paid = True
-                paid_amt = subtotal
-                due = 0.0
-            else:
-                raw_paid = bool(d.get("paid"))
-                payment_id = str(d.get("payment_id") or "").strip()
-                paid_at = str(d.get("paid_at") or "").strip()
-                try:
-                    paid_amt = float(d.get("paid_amount") or 0.0)
-                except (TypeError, ValueError):
-                    paid_amt = 0.0
-
-                # Disregard auto-paid ghost flags where no payment record or admin settle exists
-                if raw_paid and not payment_id and not paid_at and paid_amt <= 0.0:
-                    raw_paid = False
-                    paid_amt = 0.0
-
-                if raw_paid and paid_amt <= 0.0:
-                    paid_amt = subtotal
-
-                due = 0.0 if raw_paid else round(max(0.0, subtotal - paid_amt), 2)
-                is_paid = raw_paid or (due <= 0.009 and subtotal > 0)
+            # Only the designated payer of THIS invoice is auto-paid for their own dish
+            is_payer_self = is_detail_payer(inv, d)
+            is_paid, paid_amt, due = detail_payment_state(d, is_payer=is_payer_self)
+            payment_id = str(d.get("payment_id") or "").strip()
+            paid_at = str(d.get("paid_at") or "").strip()
 
             parsed_invoice_details.append({
                 "user_id": d_uid,
@@ -314,7 +288,7 @@ async def list_members(
             total_active += 1
 
         # Calculate remaining unpaid debt, spending, and payer receivables for this user
-        u_names = name_variants(username=username, full_name=full_name)
+        u_names = exact_names(username, full_name)
         total_spend = 0.0
         unpaid_debt = 0.0
         paid_spend = 0.0
@@ -493,7 +467,7 @@ async def settle_member_debt(
     user_row = await repo.find_by_pk("user", str(user_id)) if is_configured() else {}
     username = str((user_row.get("username", "") if user_row else "") or "")
     full_name = str((user_row.get("full_name", "") if user_row else "") or "")
-    names = name_variants(username=username, full_name=full_name)
+    names = exact_names(username, full_name)
 
     all_invoices = await sheets_invoices.list_all()
     if wanted_chat:
@@ -506,10 +480,8 @@ async def settle_member_debt(
         inv_id = inv["invoice_id"]
         for d in inv.get("details") or []:
             if is_same_person(d.get("user_id"), d.get("user_name"), str(user_id), names):
-                if not d.get("paid"):
-                    subtotal = float(d.get("subtotal") or 0.0)
-                    paid_amt = float(d.get("paid_amount") or 0.0)
-                    due = max(0.0, subtotal - paid_amt)
+                is_paid, _, due = detail_payment_state(d, is_payer=is_detail_payer(inv, d))
+                if not is_paid:
                     await sheets_invoices.set_member_paid_status(
                         invoice_id=inv_id,
                         user_id=str(user_id),
@@ -548,16 +520,14 @@ async def settle_bulk_members(
         user_row = await repo.find_by_pk("user", str(uid)) if is_configured() else {}
         username = str((user_row.get("username", "") if user_row else "") or "")
         full_name = str((user_row.get("full_name", "") if user_row else "") or "")
-        names = name_variants(username=username, full_name=full_name)
+        names = exact_names(username, full_name)
 
         for inv in all_invoices:
             inv_id = inv["invoice_id"]
             for d in inv.get("details") or []:
                 if is_same_person(d.get("user_id"), d.get("user_name"), str(uid), names):
-                    if not d.get("paid"):
-                        subtotal = float(d.get("subtotal") or 0.0)
-                        paid_amt = float(d.get("paid_amount") or 0.0)
-                        due = max(0.0, subtotal - paid_amt)
+                    is_paid, _, due = detail_payment_state(d, is_payer=is_detail_payer(inv, d))
+                    if not is_paid:
                         await sheets_invoices.set_member_paid_status(
                             invoice_id=inv_id,
                             user_id=str(uid),
