@@ -4,7 +4,7 @@ Central Invoicing Engine for Telegram Food Poll Bot.
 Generates and dispatches invoices to Telegram group chats and persists them
 to Google Sheets (`invoice` tab). Used by:
 - Manual invoice generation API (/api/orders/{id}/invoice)
-- Bot commands (/auto-invoice)
+- Bot commands (/gen_invoice)
 - Scheduled cutoff snapshots
 """
 

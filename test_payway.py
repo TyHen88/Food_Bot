@@ -165,44 +165,12 @@ def test_auto_invoicing_helpers():
     print("✓ Invoicing helpers and text rendering work")
 
 
-def test_auto_invoice_time_and_price_parser():
-    from bot.handlers import _parse_time_arg, _parse_price_arg
-
-    # Test time extraction with full sentence
-    t1 = _parse_time_arg("/auto-invoice set to 11:59 AM in cambodia time")
-    assert t1 is not None
-    assert t1[0] == 11 and t1[1] == 59
-    assert t1[2] == "11:59"
-    assert t1[3] == "11:59 AM"
-
-    # Test 12-hour PM
-    t2 = _parse_time_arg("/auto-invoice set 1:30 PM")
-    assert t2 is not None
-    assert t2[0] == 13 and t2[1] == 30
-    assert t2[2] == "13:30"
-    assert t2[3] == "01:30 PM"
-
-    # Test 24-hour
-    t3 = _parse_time_arg("/auto-invoice 11:59")
-    assert t3 is not None
-    assert t3[0] == 11 and t3[1] == 59
-
-    # Test price parsing
-    p1 = _parse_price_arg("/auto-invoice 1.75")
-    assert p1 == 1.75
-
-    p2 = _parse_price_arg("/auto-invoice set 11:59 AM $2.50")
-    assert p2 == 2.50
-    print("✓ Auto-invoice time and price argument parser works perfectly")
-
-
 if __name__ == "__main__":
     print("Running ABA PayWay & Invoicing feature tests...")
     test_parser_exact_sample()
     test_parser_khr()
     test_parser_with_forward_and_emoji_prefix()
     test_auto_invoicing_helpers()
-    test_auto_invoice_time_and_price_parser()
     test_name_tokens_matching()
     test_receipt_formatting()
     test_non_member_handling()

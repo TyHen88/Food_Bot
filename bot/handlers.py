@@ -189,10 +189,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if text.startswith("/"):
         first_token = text.split()[0].lower().split("@")[0]
         norm_cmd = first_token.replace("-", "_")
-        if norm_cmd in ("/auto_invoice", "/autoinvoice"):
-            return await handle_auto_invoice_command(update, context)
-        if norm_cmd in ("/invoice_command", "/invoicecommand", "/invoice_commands", "/invoicecommands"):
-            return await handle_invoice_command_help(update, context)
+        if norm_cmd in ("/gen_invoice", "/geninvoice"):
+            return await handle_gen_invoice_command(update, context)
         if norm_cmd in ("/setup_payment_bot", "/payment_bot"):
             return await handle_setup_payment_bot_command(update, context)
         if norm_cmd == "/schedule_list":
@@ -888,68 +886,43 @@ async def handle_setup_payment_bot_command(
     await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
 
 
-def _parse_time_arg(text: str) -> Optional[tuple[int, int, str, str]]:
-    """
-    Extract time from text like "11:59 AM", "11:59pm", "11:59", "1:30 PM", "13:30", "11 AM".
-    Returns (hour_24, minute, hh_mm_24, formatted_12h) e.g. (11, 59, "11:59", "11:59 AM")
-    """
-    m = re.search(r"\b(\d{1,2}):(\d{2})(?::\d{2})?\s*(am|pm)?\b", text, re.IGNORECASE)
-    if m:
-        h = int(m.group(1))
-        minute = int(m.group(2))
-        am_pm = m.group(3)
-        if 0 <= minute <= 59:
-            if am_pm:
-                if am_pm.upper() == "PM" and h < 12:
-                    h += 12
-                elif am_pm.upper() == "AM" and h == 12:
-                    h = 0
-            if 0 <= h <= 23:
-                period = "AM" if h < 12 else "PM"
-                disp_h = h % 12
-                if disp_h == 0:
-                    disp_h = 12
-                return h, minute, f"{h:02d}:{minute:02d}", f"{disp_h:02d}:{minute:02d} {period}"
-
-    m2 = re.search(r"\b(\d{1,2})\s*(am|pm)\b", text, re.IGNORECASE)
-    if m2:
-        h = int(m2.group(1))
-        am_pm = m2.group(2)
-        minute = 0
-        if 1 <= h <= 12:
-            if am_pm.upper() == "PM" and h < 12:
-                h += 12
-            elif am_pm.upper() == "AM" and h == 12:
-                h = 0
-            period = "AM" if h < 12 else "PM"
-            disp_h = h % 12
-            if disp_h == 0:
-                disp_h = 12
-            return h, minute, f"{h:02d}:{minute:02d}", f"{disp_h:02d}:{minute:02d} {period}"
-
-    return None
+# Fixed per-dish price billed by /gen_invoice. Custom prices are set from
+# the Mini App's invoice form instead.
+GEN_INVOICE_PRICE = 1.75
 
 
-def _parse_price_arg(text: str) -> Optional[float]:
-    """Extract standalone price number like '1.75' or '$1.75'."""
-    for part in text.split():
-        cleaned = part.strip().lstrip("$").rstrip("$")
-        if ":" in cleaned or cleaned.lower() in ("am", "pm", "set", "to", "in", "cambodia", "time", "at", "on", "off", "status"):
-            continue
+def _order_has_items(row: Dict[str, Any]) -> bool:
+    """True if an `order` row has at least one dish (item is a JSON array)."""
+    raw = row.get("item")
+    if isinstance(raw, str):
         try:
-            val = float(cleaned)
-            if 0.1 <= val <= 1000.0:
-                return val
+            raw = json.loads(raw) if raw.strip() else []
         except ValueError:
-            continue
-    return None
+            return False
+    return bool(sheets_orders._normalize_items(raw))
+
+
+async def _older_uninvoiced_orders(chat_id: int, today: str, invoiced: set) -> List[Dict[str, Any]]:
+    """This chat's orders before `today` that have dishes but no invoice."""
+    return [
+        o for o in await sheets_orders.list_in_range(None, today)
+        if str(o.get("chat_id")) == str(chat_id)
+        and str(o.get("order_date", ""))[:10] < today
+        and str(o.get("order_id", "")) not in invoiced
+        and _order_has_items(o)
+    ]
 
 
 @admin_only
-async def handle_auto_invoice_command(
+async def handle_gen_invoice_command(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """`/auto-invoice` — configure auto-invoice schedule time and price, or run now."""
+    """`/gen_invoice` — generate and send this chat's invoice right now at a
+    fixed $1.75 per dish. One-off: nothing is scheduled or saved as a setting.
+
+    Target: the chat's open poll (snapshotted first, so the latest votes are
+    billed), else today's order that has no invoice yet.
+    """
     if not update.message:
         return
 
@@ -957,210 +930,89 @@ async def handle_auto_invoice_command(
     if not chat_id:
         await update.message.reply_text("Error: Cannot determine chat ID.")
         return
-
-    text = update.message.text or ""
-    clean_text = text.strip()
-    words = clean_text.lower().split()
-    cmd_arg = " ".join(words[1:]) if len(words) > 1 else ""
-
-    # 1. Disable schedule
-    if cmd_arg in ("off", "disable", "stop"):
-        if is_configured():
-            await sheets_settings.set("AUTO_INVOICE_ENABLED", "FALSE")
-            await reload_schedules(context.application)
-        await update.message.reply_text(
-            "🔴 <b>Auto-Invoice Disabled</b>\n\n"
-            "Invoices will no longer be automatically generated on schedule.",
-            parse_mode="HTML",
-        )
+    if not is_configured():
+        await update.message.reply_text("⚠️ Google Sheets is not configured — cannot generate invoices.")
         return
 
-    # 2. Check status
-    if cmd_arg in ("status", "info"):
-        enabled = await sheets_settings.get("AUTO_INVOICE_ENABLED", "TRUE")
-        raw_time = await sheets_settings.get("AUTO_INVOICE_TIME", "11:59")
-        price = await sheets_settings.get("AUTO_INVOICE_PRICE", "1.75")
-        status_str = "🟢 Enabled" if str(enabled).upper() == "TRUE" else "🔴 Disabled"
+    from .sheets import invoices as sheets_invoices
+    from .sheets.orders import _today_date
 
-        # Format 12h display
-        t_parsed = _parse_time_arg(raw_time)
-        disp_time = t_parsed[3] if t_parsed else f"{raw_time} AM"
-
-        await update.message.reply_text(
-            "⚙️ <b>Auto-Invoice Schedule Status</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"⏰ <b>Schedule Time:</b> {disp_time} (Cambodia Time / GMT+7)\n"
-            f"💵 <b>Fixed Price:</b> ${float(price):.2f} / dish\n"
-            f"📅 <b>Days:</b> Monday – Friday\n"
-            f"🔔 <b>Status:</b> {status_str}\n\n"
-            "<i>Commands:\n"
-            "• <code>/auto-invoice set 11:59 AM</code> — update time\n"
-            "• <code>/auto-invoice 1.75</code> — update price\n"
-            "• <code>/auto-invoice on</code> / <code>off</code> — toggle schedule</i>",
-            parse_mode="HTML",
-        )
-        return
-
-    # 3. Check for time or price settings in arguments
-    time_parsed = _parse_time_arg(clean_text)
-    price_parsed = _parse_price_arg(clean_text)
-
-    if time_parsed or price_parsed:
-        if is_configured():
-            await sheets_settings.set("AUTO_INVOICE_ENABLED", "TRUE")
-            if time_parsed:
-                await sheets_settings.set("AUTO_INVOICE_TIME", time_parsed[2])
-            if price_parsed is not None:
-                await sheets_settings.set("AUTO_INVOICE_PRICE", f"{price_parsed:.2f}")
-            await reload_schedules(context.application)
-
-        raw_time = await sheets_settings.get("AUTO_INVOICE_TIME", "11:59")
-        cur_price = await sheets_settings.get("AUTO_INVOICE_PRICE", "1.75")
-        t_parsed = _parse_time_arg(raw_time)
-        disp_time = t_parsed[3] if t_parsed else f"{raw_time} AM"
-
-        await update.message.reply_text(
-            "⚙️ <b>Auto-Invoice Schedule Configured!</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"⏰ <b>Schedule Time:</b> {disp_time} (Cambodia Time / GMT+7)\n"
-            f"💵 <b>Fixed Price:</b> ${float(cur_price):.2f} / dish\n"
-            f"📅 <b>Schedule:</b> Monday – Friday\n"
-            "🟢 <b>Status:</b> Enabled\n\n"
-            f"<i>Invoices will be automatically generated and shared to group chats at {disp_time} daily.</i>",
-            parse_mode="HTML",
-        )
-        return
-
-    # 4. If argument is "on" or "enable"
-    if cmd_arg in ("on", "enable"):
-        if is_configured():
-            await sheets_settings.set("AUTO_INVOICE_ENABLED", "TRUE")
-            await reload_schedules(context.application)
-        raw_time = await sheets_settings.get("AUTO_INVOICE_TIME", "11:59")
-        cur_price = await sheets_settings.get("AUTO_INVOICE_PRICE", "1.75")
-        t_parsed = _parse_time_arg(raw_time)
-        disp_time = t_parsed[3] if t_parsed else f"{raw_time} AM"
-        await update.message.reply_text(
-            "🟢 <b>Auto-Invoice Schedule Enabled!</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"⏰ <b>Schedule Time:</b> {disp_time} (Cambodia Time / GMT+7)\n"
-            f"💵 <b>Fixed Price:</b> ${float(cur_price):.2f} / dish\n"
-            "📅 <b>Schedule:</b> Monday – Friday",
-            parse_mode="HTML",
-        )
-        return
-
-    # 5. Default / "now" -> Execute immediate invoice generation for today's order + show schedule
-    if is_configured():
-        await sheets_settings.set("AUTO_INVOICE_ENABLED", "TRUE")
-    price_str = await sheets_settings.get("AUTO_INVOICE_PRICE", "1.75")
-    try:
-        price = float(price_str)
-    except ValueError:
-        price = 1.75
-
-    raw_time = await sheets_settings.get("AUTO_INVOICE_TIME", "11:59")
-    t_parsed = _parse_time_arg(raw_time)
-    disp_time = t_parsed[3] if t_parsed else f"{raw_time} AM"
-
-    open_polls = await sheets_polls.list_open() if is_configured() else []
-    chat_open_polls = [p for p in open_polls if str(p.get("chat_id")) == str(chat_id)]
-
+    price = GEN_INVOICE_PRICE
     target_order_id = None
+    today = _today_date()
+
+    open_polls = await sheets_polls.list_open()
+    chat_open_polls = [p for p in open_polls if str(p.get("chat_id")) == str(chat_id)]
     if chat_open_polls:
         poll = chat_open_polls[0]
         poll_id = poll["poll_id"]
-        await _take_order_snapshot(update, poll, poll_id)
+        votes = {k: v for k, v in (await get_global_orders(poll_id)).items() if v > 0}
+        if not votes:
+            await update.message.reply_text(
+                "ℹ️ The open poll has no votes yet — nothing to invoice.\n"
+                "Run /gen_invoice again after people have voted."
+            )
+            return
+        snapshot_error = await _take_order_snapshot(update, poll, poll_id)
+        if snapshot_error:
+            await update.message.reply_text(f"⚠️ Could not save the order: {snapshot_error}")
+            return
         target_order_id = poll_id
     else:
-        from .sheets.orders import _today_date
-        today = _today_date()
-        orders_today = await sheets_orders.list_by_date(today)
-        chat_orders = [o for o in orders_today if str(o.get("chat_id")) == str(chat_id)]
-        if chat_orders:
-            target_order_id = chat_orders[0].get("order_id")
+        chat_orders = [
+            o for o in await sheets_orders.list_by_date(today)
+            if str(o.get("chat_id")) == str(chat_id) and _order_has_items(o)
+        ]
+        invoiced = await sheets_invoices.order_ids_with_invoice()
+        pending = [o for o in chat_orders if str(o.get("order_id", "")) not in invoiced]
+        if pending:
+            target_order_id = pending[0].get("order_id")
+        else:
+            # Nothing to bill today. Don't silently re-bill an already-sent
+            # invoice at $1.75 over prices an admin may have set for it.
+            if chat_orders:
+                head = "ℹ️ Today's invoice for this chat has already been sent — nothing new to generate."
+            else:
+                head = "ℹ️ No open poll or order today in this chat — nothing to invoice."
+            older = await _older_uninvoiced_orders(chat_id, today, invoiced)
+            if older:
+                dates = ", ".join(sorted({str(o.get("order_date", ""))[:10] for o in older})[-5:])
+                tail = (
+                    f"\n\n⚠️ {len(older)} older order(s) still have no invoice ({dates}).\n"
+                    "Open the Mini App → Invoices → Not generated to send them."
+                )
+            elif chat_orders:
+                tail = "\n\nUse the Mini App (Invoices → open it) to edit or re-send it."
+            else:
+                tail = "\n\n✅ Every order in this chat already has an invoice."
+            await update.message.reply_text(head + tail)
+            return
 
-    if target_order_id:
-        try:
-            res = await generate_and_send_invoice(
-                bot=context.bot,
-                order_id=target_order_id,
-                chat_id=chat_id,
-                price_per_item=price,
-                sent_by=update.effective_user.id if update.effective_user else None,
-            )
-            total = res.get("total", 0.0)
-            await update.message.reply_text(
-                "✅ <b>Auto-Invoice Generated & Sent!</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"💵 <b>Fixed Price:</b> ${price:.2f} / dish\n"
-                f"💰 <b>Total Billed:</b> ${total:.2f}\n"
-                f"⏰ <b>Daily Schedule:</b> {disp_time} (Mon–Fri)\n"
-                "🟢 <b>Status:</b> Enabled",
-                parse_mode="HTML",
-            )
-        except Exception as e:
-            logger.error(f"Error in handle_auto_invoice_command: {e}", exc_info=True)
-            await update.message.reply_text(
-                f"⚠️ Error generating invoice: {e}\n\n"
-                f"Auto-invoice schedule is active at <b>{disp_time}</b> (${price:.2f}/dish).",
-                parse_mode="HTML",
-            )
-    else:
-        await update.message.reply_text(
-            "⚙️ <b>Auto-Invoice Schedule Active</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"⏰ <b>Daily Time:</b> {disp_time} (Cambodia Time / GMT+7)\n"
-            f"💵 <b>Fixed Price:</b> ${price:.2f} / dish\n"
-            f"📅 <b>Schedule:</b> Monday – Friday\n"
-            "🟢 <b>Status:</b> Enabled\n\n"
-            "<i>(No open poll or order found for today in this chat. Invoices will be auto-generated at "
-            f"{disp_time} when orders are placed.)</i>",
-            parse_mode="HTML",
+    try:
+        res = await generate_and_send_invoice(
+            bot=context.bot,
+            order_id=target_order_id,
+            chat_id=chat_id,
+            price_per_item=price,
+            sent_by=update.effective_user.id if update.effective_user else None,
         )
-
-
-@admin_only
-async def handle_invoice_command_help(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """`/invoice-command` — display instructions and examples for auto-invoice commands."""
-    if not update.message:
+    except ValueError as e:
+        # generate_and_send_invoice's "order not found / has no items" cases.
+        await update.message.reply_text(f"ℹ️ Nothing to invoice: {e}")
+        return
+    except Exception as e:
+        logger.error(f"Error in handle_gen_invoice_command: {e}", exc_info=True)
+        await update.message.reply_text(f"⚠️ Error generating invoice: {e}")
         return
 
-    raw_time = await sheets_settings.get("AUTO_INVOICE_TIME", "11:59") if is_configured() else "11:59"
-    cur_price = await sheets_settings.get("AUTO_INVOICE_PRICE", "1.75") if is_configured() else "1.75"
-    enabled = await sheets_settings.get("AUTO_INVOICE_ENABLED", "TRUE") if is_configured() else "TRUE"
-    t_parsed = _parse_time_arg(raw_time)
-    disp_time = t_parsed[3] if t_parsed else f"{raw_time} AM"
-    status_str = "🟢 Enabled" if str(enabled).upper() == "TRUE" else "🔴 Disabled"
-
-    text = (
-        "📋 <b>Auto-Invoice Command Guide</b>\n"
+    total = res.get("total", 0.0)
+    await update.message.reply_text(
+        "✅ <b>Invoice Generated & Sent!</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"⚙️ <b>Current Settings:</b>\n"
-        f"• <b>Status:</b> {status_str}\n"
-        f"• <b>Schedule Time:</b> {disp_time} (Cambodia Time / GMT+7)\n"
-        f"• <b>Fixed Price:</b> ${float(cur_price):.2f} / dish\n"
-        f"• <b>Days:</b> Monday – Friday\n\n"
-        "⏰ <b>1. Set Schedule Time</b>\n"
-        "You can set the schedule time using natural command phrases:\n"
-        "• <code>/auto-invoice set to 11:59 AM in cambodia time</code>\n"
-        "• <code>/auto-invoice set 11:59 AM</code>\n"
-        "• <code>/auto-invoice time 11:59 AM</code>\n"
-        "• <code>/auto-invoice 11:59</code>\n"
-        "• <code>/auto-invoice 1:30 PM</code>\n\n"
-        "💵 <b>2. Set Fixed Price</b>\n"
-        "• <code>/auto-invoice 1.75</code> <i>(updates price)</i>\n"
-        "• <code>/auto-invoice set 11:59 AM 1.75</code> <i>(updates both time & price)</i>\n\n"
-        "🔘 <b>3. Status & Toggle</b>\n"
-        "• <code>/auto-invoice status</code> <i>(checks current schedule & price)</i>\n"
-        "• <code>/auto-invoice on</code> <i>(enables schedule)</i>\n"
-        "• <code>/auto-invoice off</code> <i>(disables schedule)</i>\n\n"
-        "⚡ <b>4. Generate Now</b>\n"
-        "• <code>/auto-invoice</code> <i>(generates invoice immediately for today's order)</i>"
+        f"💵 <b>Fixed Price:</b> ${price:.2f} / dish\n"
+        f"💰 <b>Total Billed:</b> ${total:.2f}",
+        parse_mode="HTML",
     )
-    await update.message.reply_text(text, parse_mode="HTML")
 
 
 
@@ -1361,21 +1213,16 @@ def setup_handlers(application) -> None:
     # Admin commands (decorated with @admin_only)
     application.add_handler(CommandHandler("admin", handle_admin_command))
     application.add_handler(CommandHandler("set", handle_set_command))
-    application.add_handler(CommandHandler("auto_invoice", handle_auto_invoice_command))
-    application.add_handler(CommandHandler("autoinvoice", handle_auto_invoice_command))
-    application.add_handler(CommandHandler("invoice_command", handle_invoice_command_help))
-    application.add_handler(CommandHandler("invoicecommand", handle_invoice_command_help))
-    application.add_handler(CommandHandler("invoice_commands", handle_invoice_command_help))
-    application.add_handler(CommandHandler("invoicecommands", handle_invoice_command_help))
+    application.add_handler(CommandHandler("gen_invoice", handle_gen_invoice_command))
+    application.add_handler(CommandHandler("geninvoice", handle_gen_invoice_command))
     application.add_handler(CommandHandler("setup_payment_bot", handle_setup_payment_bot_command))
     application.add_handler(CommandHandler("payment_bot", handle_setup_payment_bot_command))
     application.add_handler(CommandHandler("schedule_list", handle_schedule_list_command))
     application.add_handler(CommandHandler("schedule_enable", handle_schedule_enable_command))
     application.add_handler(CommandHandler("schedule_disable", handle_schedule_disable_command))
 
-    # Hyphenated slash commands (e.g. /auto-invoice, /invoice-command, /setup-payment-bot)
-    application.add_handler(MessageHandler(filters.Regex(re.compile(r"^/(?:auto[-_]invoice|autoinvoice)", re.IGNORECASE)), handle_auto_invoice_command))
-    application.add_handler(MessageHandler(filters.Regex(re.compile(r"^/(?:invoice[-_]command|invoicecommand|invoice[-_]commands|invoicecommands)", re.IGNORECASE)), handle_invoice_command_help))
+    # Hyphenated slash commands (e.g. /gen-invoice, /setup-payment-bot)
+    application.add_handler(MessageHandler(filters.Regex(re.compile(r"^/(?:gen[-_]invoice|geninvoice)(?:@\w+)?(?:\s|$)", re.IGNORECASE)), handle_gen_invoice_command))
     application.add_handler(MessageHandler(filters.Regex(re.compile(r"^/(?:setup[-_]payment[-_]bot|payment[-_]bot)", re.IGNORECASE)), handle_setup_payment_bot_command))
     application.add_handler(MessageHandler(filters.Regex(re.compile(r"^/(?:schedule[-_]list)", re.IGNORECASE)), handle_schedule_list_command))
     application.add_handler(MessageHandler(filters.Regex(re.compile(r"^/(?:schedule[-_]enable)", re.IGNORECASE)), handle_schedule_enable_command))
